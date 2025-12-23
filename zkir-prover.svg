@@ -24,8 +24,8 @@
         fill="none" stroke="#FFFFFF" stroke-width="4" opacity="0.8"/>
   
   <!-- Checkmark -->
-  <path d="M 218 168 L 238 188 L 274 148" 
-        fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 222 168 L 239 185 L 270 152" 
+        fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
   
   <text x="200" y="320" font-family="'IBM Plex Mono', monospace" font-size="36" font-weight="600" fill="#1C1C1C" text-anchor="middle" letter-spacing="2">ZKIR-PROVER</text>
   <text x="200" y="345" font-family="'IBM Plex Mono', monospace" font-size="10" font-weight="500" fill="#6B7280" text-anchor="middle" letter-spacing="3">STARK PROOF GENERATOR</text>
