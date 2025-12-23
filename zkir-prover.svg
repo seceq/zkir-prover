@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="seceqGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00b4d8"/>
+      <stop offset="100%" style="stop-color:#023e8a"/>
+    </linearGradient>
+  </defs>
+  
+  <rect width="400" height="400" fill="#FFFFFF"/>
+  
+  <!-- Rounded square container -->
+  <rect x="80" y="45" width="240" height="220" rx="45" fill="url(#seceqGrad)"/>
+  
+  <!-- Back square: x=110, y=95, 90x90, center at (155, 140) -->
+  <rect x="110" y="95" width="90" height="90" rx="12" 
+        fill="none" stroke="#FFFFFF" stroke-width="4" opacity="0.3"/>
+  <g fill="#FFFFFF" font-family="'IBM Plex Mono', monospace" font-size="18" font-weight="600" text-anchor="middle" opacity="0.3">
+    <text x="155" y="129" dominant-baseline="middle">0101</text>
+    <text x="155" y="151" dominant-baseline="middle">1100</text>
+  </g>
+  
+  <!-- Front square: x=200, y=120, 90x90, center at (245, 165) -->
+  <rect x="200" y="120" width="90" height="90" rx="12" 
+        fill="none" stroke="#FFFFFF" stroke-width="4" opacity="0.8"/>
+  
+  <!-- Checkmark -->
+  <path d="M 218 168 L 238 188 L 274 148" 
+        fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <text x="200" y="320" font-family="'IBM Plex Mono', monospace" font-size="36" font-weight="600" fill="#1C1C1C" text-anchor="middle" letter-spacing="2">ZKIR-PROVER</text>
+  <text x="200" y="345" font-family="'IBM Plex Mono', monospace" font-size="10" font-weight="500" fill="#6B7280" text-anchor="middle" letter-spacing="3">STARK PROOF GENERATOR</text>
+</svg>

@@ -1,4 +1,6 @@
-# ZK IR Prover
+<p align="center">
+  <img src="zkir-prover.svg" alt="zkir-prover Logo" width="400">
+</p>
 
 STARK prover for [ZK IR](https://github.com/seceq/zkir) using Plonky3 with Baby Bear field.
 
