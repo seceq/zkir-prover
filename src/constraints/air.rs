@@ -33,8 +33,8 @@ impl MainColumns {
         // Memory columns (address + value + flags)
         cols += config.addr_limbs as usize + config.data_limbs as usize + 2;
 
-        // Instruction decoding (opcode + rd/rs1/rs2 + imm/funct + flags)
-        cols += 1 + 3 + 1 + 1 + 1;
+        // Instruction decoding (opcode + rd/rs1/rs2 + imm/funct + flags + imm_limbs)
+        cols += 1 + 3 + 1 + 1 + 1 + 2; // Added 2 for imm_limb_0, imm_limb_1
 
         // Selector columns (10 instruction families)
         cols += 10;
@@ -63,6 +63,7 @@ impl MainColumns {
         if config.data_limbs > 1 {
             cols += (config.data_limbs - 1) as usize; // ADD/ADDI carries
             cols += (config.data_limbs - 1) as usize; // SUB/SUBI borrows
+            cols += (config.data_limbs - 1) as usize; // ADD/ADDI truncation carries
         }
 
         // Bitwise chunk decomposition (6 chunks per limb)
@@ -525,6 +526,22 @@ impl ZkIrAir {
         self.indices.imm_sign_bit
     }
 
+    /// Get column index for sign-extended immediate limb 0
+    ///
+    /// For I-type instructions: imm_limb_0 = imm_raw + sign_bit * (2^20 - 2^17)
+    /// For R-type instructions: should be 0
+    pub fn col_imm_limb_0(&self) -> usize {
+        self.indices.imm_limb_0
+    }
+
+    /// Get column index for sign-extended immediate limb 1
+    ///
+    /// For I-type instructions: imm_limb_1 = sign_bit * (2^20 - 1)
+    /// For R-type instructions: should be 0
+    pub fn col_imm_limb_1(&self) -> usize {
+        self.indices.imm_limb_1
+    }
+
     // --- Selector columns (instruction family indicators) ---
 
     /// Get column index for arithmetic instruction family selector
@@ -905,6 +922,14 @@ impl ZkIrAir {
     #[inline]
     pub fn col_sub_borrow(&self, limb_idx: usize) -> usize {
         self.indices.sub_borrow(limb_idx)
+    }
+
+    /// Get column index for ADD/ADDI truncation carry at limb boundary
+    ///
+    /// Truncation carry detects when rs1[i] + operand2[i] + carry[i-1] >= 2^limb_bits
+    /// Used for limb 1+ to handle overflow in multi-limb addition.
+    pub fn col_add_trunc_carry(&self, limb_idx: usize) -> usize {
+        self.indices.add_trunc_carry(limb_idx)
     }
 
     // --- Auxiliary columns for bitwise operations ---
@@ -1525,7 +1550,7 @@ mod tests {
         // Plus DIV/REM hierarchical columns: 4 diff chunks + 1 product carry = 5
         // Plus SHIFT hierarchical columns: 2 carry decomp = 2
         // Total additional: 49 + 5 + 2 = 56
-        assert_eq!(air.num_columns, 254); // +56 hierarchical decomposition columns (chunk-based MUL)
+        assert_eq!(air.num_columns, 257); // 247 main (with Option A imm limbs) + 10 aux
     }
 
     #[test]
@@ -1555,7 +1580,7 @@ mod tests {
         // Plus SHIFT hierarchical columns: 4 carry decomp = 4
         // Total additional: 99 + 7 + 4 = 110 (+ 1 extra for addr_limbs)
         // Note: addr_limbs = 2 here, so 1 fewer column than config with addr_limbs = 3
-        assert_eq!(air.num_columns, 340); // +86 hierarchical decomposition columns for 3-limb (chunk-based MUL)
+        assert_eq!(air.num_columns, 344); // 334 main (with Option A: 2 imm_limb + 2 add_trunc_carry for 3-limb) + 10 aux
     }
 
     #[test]

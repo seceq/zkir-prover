@@ -468,13 +468,19 @@ fn verify_memory_consistency(sorted_ops: &[MemoryOperation]) {
             last_write_value.insert(op.addr, op.value);
         } else {
             // Verify read sees correct value
-            let expected = *last_write_value.get(&op.addr).unwrap_or(&0);
-            if op.value != expected {
-                panic!(
-                    "Memory consistency violation at addr={:#x}, timestamp={}: \
-                     read value {:#x} but expected {:#x} from last write",
-                    op.addr, op.timestamp, op.value, expected
-                );
+            // For the first read from an address (no prior write in trace),
+            // treat the read value as the initial memory content (from code/data sections)
+            if let Some(&expected) = last_write_value.get(&op.addr) {
+                if op.value != expected {
+                    panic!(
+                        "Memory consistency violation at addr={:#x}, timestamp={}: \
+                         read value {:#x} but expected {:#x} from last write",
+                        op.addr, op.timestamp, op.value, expected
+                    );
+                }
+            } else {
+                // First read from this address - record it as the initial value
+                last_write_value.insert(op.addr, op.value);
             }
         }
     }

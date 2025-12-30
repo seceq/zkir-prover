@@ -72,12 +72,19 @@ pub const IS_IMM_COLUMN: usize = 1;
 /// Immediate sign bit column
 pub const IMM_SIGN_COLUMN: usize = 1;
 
+/// Sign-extended immediate limb columns (for multi-limb immediate arithmetic)
+/// When is_imm=1, these store the sign-extended immediate value split into limbs
+/// imm_limb_0: 17-bit immediate extended to 20-bit (imm_raw + sign_bit * (2^20 - 2^17))
+/// imm_limb_1: all 1s if negative (sign_bit=1), else 0
+pub const IMM_LIMB_COLUMNS: usize = 2;
+
 /// Total instruction decode columns
 pub const INSTRUCTION_DECODE_COLUMNS: usize = OPCODE_COLUMN
     + REGISTER_FIELD_COLUMNS
     + IMM_FUNCT_COLUMN
     + IS_IMM_COLUMN
-    + IMM_SIGN_COLUMN;
+    + IMM_SIGN_COLUMN
+    + IMM_LIMB_COLUMNS;
 
 // ============================================================================
 // Instruction Family Selector Columns
@@ -335,6 +342,19 @@ pub const fn sub_borrow_columns(data_limbs: usize) -> usize {
     }
 }
 
+/// ADD/ADDI truncation carry columns for limb overflow detection
+/// When rs1[i] + operand2[i] + carry[i-1] >= 2^limb_bits, truncation_carry[i]=1
+/// This is needed for limb 1+ to handle overflow in addition
+/// For 2-limb arithmetic: 1 truncation carry at limb boundary
+#[inline]
+pub const fn add_trunc_carry_columns(data_limbs: usize) -> usize {
+    if data_limbs > 1 {
+        data_limbs - 1
+    } else {
+        0
+    }
+}
+
 // ============================================================================
 // Bitwise Chunk Decomposition Columns
 // ============================================================================
@@ -419,6 +439,7 @@ pub const fn main_column_count(data_limbs: usize, addr_limbs: usize) -> usize {
     // Multi-limb arithmetic carry/borrow
     count += add_carry_columns(data_limbs);
     count += sub_borrow_columns(data_limbs);
+    count += add_trunc_carry_columns(data_limbs);
 
     // Chunk decomposition
     count += bitwise_chunk_columns(data_limbs);
@@ -462,20 +483,22 @@ mod tests {
         assert_eq!(aux, 10);
         assert_eq!(total, main + aux);
 
-        // Main columns breakdown:
+        // Main columns breakdown (with Option A columns):
         // - Core: 2
         // - Registers: 32 + 16 = 48
         // - Memory: 2 + 2 + 2 = 6
-        // - Decode: 7
+        // - Decode: 7 + 2 (imm_limb_0, imm_limb_1) = 9
         // - Selectors: 10
         // - Opcode indicators: 38
         // - Register indicators: 48
         // - Complex ops: 2 + 2 + 2 + 2 + 1 + 1 + 1 = 11
+        // - Carry/borrow: 1 + 1 + 1 (add_trunc_carry) = 3
         // - Bitwise chunks: 12
         // - Range chunks: 4
-        // Total main: 2 + 48 + 6 + 7 + 10 + 38 + 48 + 11 + 12 + 4 = 186
-        // Plus aux: 10
-        // Grand total: 196
+        // Total main: 2 + 48 + 6 + 9 + 10 + 38 + 48 + 11 + 3 + 12 + 4 = 191
+        // Plus MUL (8 + 32 + 9) + DIV (4 + 1) + SHIFT (2) = 56
+        // Grand main: 191 + 56 = 247
+        // NOTE: This will be updated after Phase 1 complete test run
         println!("Main columns: {}", main);
         println!("Aux columns: {}", aux);
         println!("Total columns: {}", total);

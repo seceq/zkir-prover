@@ -535,7 +535,7 @@ mod tests {
 
         let proof = result.unwrap();
         assert_eq!(proof.metadata.num_cycles, 10);
-        assert_eq!(proof.metadata.trace_width, 254); // +56 hierarchical decomposition columns (chunk-based MUL)
+        assert_eq!(proof.metadata.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
         assert_eq!(proof.metadata.trace_height, 16);
         assert!(!proof.proof_bytes.is_empty());
     }
@@ -577,7 +577,7 @@ mod tests {
 
         let proof = result.unwrap();
         assert_eq!(proof.metadata.num_cycles, 10);
-        assert_eq!(proof.metadata.trace_width, 254); // +56 hierarchical decomposition columns (chunk-based MUL)
+        assert_eq!(proof.metadata.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
         assert!(!proof.proof_bytes.is_empty());
         assert!(proof.metadata.rap_challenge.is_some());
     }
@@ -592,7 +592,7 @@ mod tests {
 
         let proof = result.unwrap();
         assert_eq!(proof.metadata.num_cycles, 10);
-        assert_eq!(proof.metadata.trace_width, 254); // +56 hierarchical decomposition columns (chunk-based MUL)
+        assert_eq!(proof.metadata.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
         assert!(!proof.proof_bytes.is_empty());
         assert!(proof.metadata.rap_challenge.is_some());
     }

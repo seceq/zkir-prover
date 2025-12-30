@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(config.log_blowup, 1); // 2x blowup
         assert_eq!(config.blowup_factor(), 2);
         assert!(config.num_queries >= 50);
-        assert_eq!(config.trace_width(), 254); // +56 hierarchical decomposition columns (chunk-based MUL)
+        assert_eq!(config.trace_width(), 257); // 247 main (with Option A imm limbs) + 10 aux
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
             },
             100,
         );
-        assert_eq!(config2.trace_width(), 254); // +56 hierarchical decomposition (chunk-based MUL)
+        assert_eq!(config2.trace_width(), 257); // 247 main (with Option A imm limbs) + 10 aux
 
         // 3-limb config
         let config3 = StarkConfiguration::new(
@@ -176,7 +176,7 @@ mod tests {
             },
             100,
         );
-        assert_eq!(config3.trace_width(), 341); // +110 hierarchical decomposition for 3-limb + 1 extra addr
+        assert_eq!(config3.trace_width(), 345); // 335 main (with Option A: 2 imm_limb + 2 add_trunc_carry for 3-limb) + 10 aux
     }
 
     #[test]
@@ -215,7 +215,7 @@ mod tests {
         assert!(summary.contains("Mersenne 31"));
         assert!(summary.contains("100 bits"));
         assert!(summary.contains("Poseidon2"));
-        assert!(summary.contains("254 columns")); // +56 hierarchical decomposition columns (chunk-based MUL)
+        assert!(summary.contains("257 columns")); // 247 main (with Option A imm limbs) + 10 aux
     }
 
     #[test]

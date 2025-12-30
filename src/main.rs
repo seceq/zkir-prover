@@ -63,13 +63,13 @@ fn main() -> Result<()> {
         Commands::Status => cmd_status(),
         Commands::ValidateWitness { witness } => cmd_validate_witness(witness),
         Commands::Prove { .. } => {
-            eprintln!("❌ Proof generation not yet implemented");
+            eprintln!("Error: Proof generation not yet implemented");
             eprintln!("   Status: Awaiting Phase 3 (Proof Backend)");
             eprintln!("   See: docs/PROVER_ROADMAP.md");
             std::process::exit(1);
         }
         Commands::Verify { .. } => {
-            eprintln!("❌ Proof verification not yet implemented");
+            eprintln!("Error: Proof verification not yet implemented");
             eprintln!("   Status: Awaiting Phase 3 (Proof Backend)");
             eprintln!("   See: docs/PROVER_ROADMAP.md");
             std::process::exit(1);

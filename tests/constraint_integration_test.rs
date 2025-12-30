@@ -19,8 +19,8 @@ fn test_constraints_are_integrated() {
     let air = ZkIrAir::new(config);
 
     // Verify AIR is properly constructed
-    // 254 columns = 244 main + 10 auxiliary (includes chunk-based MUL hierarchical columns)
-    assert_eq!(air.num_columns, 254);
+    // 257 columns = 247 main (with Option A imm limbs) + 10 auxiliary
+    assert_eq!(air.num_columns, 257);
 
     // Create a simple trace with 2 rows (local and next)
     let trace_width = air.num_columns;
@@ -214,8 +214,8 @@ fn test_trace_width_with_different_configs() {
         addr_limbs: 2,
     };
     let air2 = ZkIrAir::new(config2);
-    // 254 columns = 244 main + 10 auxiliary (includes chunk-based MUL hierarchical decomposition)
-    assert_eq!(air2.num_columns, 254);
+    // 257 columns = 247 main (with Option A imm limbs) + 10 auxiliary
+    assert_eq!(air2.num_columns, 257);
 
     // 3-limb config
     let config3 = ProgramConfig {
@@ -232,8 +232,8 @@ fn test_trace_width_with_different_configs() {
     // - MUL: +4 operand chunks, +40 partial products (6²-4²=20, ×2), +6 carries ((5-3)×3)
     // - DIV: +2 cmp diff chunks
     // - SHIFT: +2 carry decomp chunks
-    // New delta = 341 - 254 = 87
-    assert_eq!(air3.num_columns, 341);
+    // New delta = 345 - 257 = 88
+    assert_eq!(air3.num_columns, 345);
 
     // Calculate expected difference
     // Each additional limb adds:
@@ -244,7 +244,7 @@ fn test_trace_width_with_different_configs() {
     // - 2 range check chunk columns
     // - Plus MUL hierarchical decomposition scaling (dominates due to n² products)
     let diff = air3.num_columns - air2.num_columns;
-    assert_eq!(diff, 87); // 341 - 254 = 87
+    assert_eq!(diff, 88); // 345 - 257 = 88 (includes +1 add_trunc_carry for 3rd limb)
 
     println!("Trace width scales correctly with limb count");
     println!("   2 limbs: {} columns", air2.num_columns);
@@ -315,13 +315,13 @@ fn test_air_width_calculation() {
     let air = ZkIrAir::new(config);
 
     // For 2-limb config with 16 registers:
-    // Current implementation: 254 columns (244 main + 10 auxiliary)
-    // Includes chunk-based MUL hierarchical decomposition columns for verification
+    // Current implementation: 257 columns (247 main + 10 auxiliary)
+    // Includes chunk-based MUL hierarchical decomposition columns and Option A imm limbs
     assert!(air.num_columns >= 50, "AIR should have at least 50 columns");
     assert!(air.num_columns <= 300, "AIR should not exceed 300 columns");
 
-    // Verify it's exactly what we documented: 254 columns (includes hierarchical columns)
-    assert_eq!(air.num_columns, 254, "Default config should have 254 columns");
+    // Verify it's exactly what we documented: 257 columns (includes Option A imm limbs)
+    assert_eq!(air.num_columns, 257, "Default config should have 257 columns");
 
     println!("AIR width calculation verified:");
     println!("   Total columns: {}", air.num_columns);

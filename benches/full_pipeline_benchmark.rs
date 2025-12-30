@@ -26,9 +26,9 @@ struct BenchmarkResult {
 }
 
 fn main() {
-    println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║          ZKIR Full Pipeline Benchmark                            ║");
-    println!("╚══════════════════════════════════════════════════════════════════╝\n");
+    println!("==================================================================");
+    println!("          ZKIR Full Pipeline Benchmark                            ");
+    println!("==================================================================\n");
 
     // Run benchmarks for different programs
     let mut results = Vec::new();
@@ -51,7 +51,7 @@ fn main() {
 
 /// Benchmark simple addition: a + b = c
 fn benchmark_simple_add() -> BenchmarkResult {
-    println!("▶ Running: Simple Addition (a + b)");
+    println!("> Running: Simple Addition (a + b)");
 
     let start_total = Instant::now();
 
@@ -77,7 +77,7 @@ fn benchmark_simple_add() -> BenchmarkResult {
     let proof_bytes = bincode::serialize(&proof).unwrap();
     let total_us = start_total.elapsed().as_micros();
 
-    println!("  ✓ Completed in {:.2}ms\n", total_us as f64 / 1000.0);
+    println!("  Completed in {:.2}ms\n", total_us as f64 / 1000.0);
 
     BenchmarkResult {
         name: "Simple Add".to_string(),
@@ -94,7 +94,7 @@ fn benchmark_simple_add() -> BenchmarkResult {
 
 /// Benchmark accumulator: sum of 1 to n
 fn benchmark_accumulator(n: u32) -> BenchmarkResult {
-    println!("▶ Running: Accumulator (sum 1 to {})", n);
+    println!("> Running: Accumulator (sum 1 to {})", n);
 
     let start_total = Instant::now();
 
@@ -119,7 +119,7 @@ fn benchmark_accumulator(n: u32) -> BenchmarkResult {
     let proof_bytes = bincode::serialize(&proof).unwrap();
     let total_us = start_total.elapsed().as_micros();
 
-    println!("  ✓ Completed in {:.2}ms (sum = {})\n",
+    println!("  Completed in {:.2}ms (sum = {})\n",
              total_us as f64 / 1000.0, n * (n + 1) / 2);
 
     BenchmarkResult {
@@ -137,7 +137,7 @@ fn benchmark_accumulator(n: u32) -> BenchmarkResult {
 
 /// Benchmark fibonacci computation
 fn benchmark_fibonacci(n: u32) -> BenchmarkResult {
-    println!("▶ Running: Fibonacci({})", n);
+    println!("> Running: Fibonacci({})", n);
 
     let start_total = Instant::now();
 
@@ -163,7 +163,7 @@ fn benchmark_fibonacci(n: u32) -> BenchmarkResult {
 
     // Calculate expected fib value
     let fib_val = fib(n);
-    println!("  ✓ Completed in {:.2}ms (fib({}) = {})\n",
+    println!("  Completed in {:.2}ms (fib({}) = {})\n",
              total_us as f64 / 1000.0, n, fib_val);
 
     BenchmarkResult {
@@ -181,7 +181,7 @@ fn benchmark_fibonacci(n: u32) -> BenchmarkResult {
 
 /// Benchmark chain of multiplications
 fn benchmark_multiply_chain(n: u32) -> BenchmarkResult {
-    println!("▶ Running: Multiply Chain (length {})", n);
+    println!("> Running: Multiply Chain (length {})", n);
 
     let start_total = Instant::now();
 
@@ -205,7 +205,7 @@ fn benchmark_multiply_chain(n: u32) -> BenchmarkResult {
     let proof_bytes = bincode::serialize(&proof).unwrap();
     let total_us = start_total.elapsed().as_micros();
 
-    println!("  ✓ Completed in {:.2}ms\n", total_us as f64 / 1000.0);
+    println!("  Completed in {:.2}ms\n", total_us as f64 / 1000.0);
 
     BenchmarkResult {
         name: format!("MulChain({})", n),
@@ -337,14 +337,14 @@ fn fib(n: u32) -> u64 {
 }
 
 fn print_summary(results: &[BenchmarkResult]) {
-    println!("\n╔══════════════════════════════════════════════════════════════════════════════════════╗");
-    println!("║                              BENCHMARK SUMMARY                                        ║");
-    println!("╠═══════════════╦════════╦══════════╦══════════════╦══════════════╦═══════════╦═════════╣");
-    println!("║ Benchmark     ║ Cycles ║ Trace Ht ║ Proof Gen    ║ Verify       ║ Proof KB  ║ Total   ║");
-    println!("╠═══════════════╬════════╬══════════╬══════════════╬══════════════╬═══════════╬═════════╣");
+    println!("\n======================================================================================");
+    println!("                              BENCHMARK SUMMARY                                        ");
+    println!("======================================================================================");
+    println!(" Benchmark      | Cycles | Trace Ht | Proof Gen    | Verify       | Proof KB  | Total   ");
+    println!("--------------------------------------------------------------------------------------");
 
     for r in results {
-        println!("║ {:13} ║ {:>6} ║ {:>8} ║ {:>10.2}ms ║ {:>10.2}ms ║ {:>7.1}KB ║ {:>5.0}ms ║",
+        println!(" {:13}  | {:>6} | {:>8} | {:>10.2}ms | {:>10.2}ms | {:>7.1}KB | {:>5.0}ms ",
                  r.name,
                  r.cycles,
                  r.trace_height,
@@ -354,13 +354,13 @@ fn print_summary(results: &[BenchmarkResult]) {
                  r.total_us as f64 / 1000.0);
     }
 
-    println!("╚═══════════════╩════════╩══════════╩══════════════╩══════════════╩═══════════╩═════════╝");
+    println!("======================================================================================");
 }
 
 fn print_observations(results: &[BenchmarkResult]) {
-    println!("\n╔══════════════════════════════════════════════════════════════════╗");
-    println!("║                         OBSERVATIONS                             ║");
-    println!("╚══════════════════════════════════════════════════════════════════╝\n");
+    println!("\n==================================================================");
+    println!("                         OBSERVATIONS                             ");
+    println!("==================================================================\n");
 
     // Calculate some metrics
     let total_proof_time: u128 = results.iter().map(|r| r.proof_generation_us).sum();

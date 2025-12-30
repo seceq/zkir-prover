@@ -49,6 +49,10 @@ pub struct ColumnIndices {
     pub is_imm: usize,
     /// Immediate sign bit column
     pub imm_sign_bit: usize,
+    /// Sign-extended immediate limb 0 (20-bit for negative immediates)
+    pub imm_limb_0: usize,
+    /// Sign-extended immediate limb 1 (all 1s if negative, else 0)
+    pub imm_limb_1: usize,
 
     // ========== Family Selector Columns ==========
     /// Base index for family selector columns
@@ -91,6 +95,8 @@ pub struct ColumnIndices {
     pub add_carry_base: usize,
     /// Base index for SUB/SUBI borrow columns
     pub sub_borrow_base: usize,
+    /// Base index for ADD/ADDI truncation carry columns (for limb overflow)
+    pub add_trunc_carry_base: usize,
 
     // ========== Chunk Decomposition Columns ==========
     /// Base index for bitwise chunk columns
@@ -214,6 +220,10 @@ impl ColumnIndices {
         offset += 1;
         let imm_sign_bit = offset;
         offset += 1;
+        let imm_limb_0 = offset;
+        offset += 1;
+        let imm_limb_1 = offset;
+        offset += 1;
 
         // Family selector columns
         let family_selectors_base = offset;
@@ -256,6 +266,8 @@ impl ColumnIndices {
         offset += add_carry_columns(data_limbs);
         let sub_borrow_base = offset;
         offset += sub_borrow_columns(data_limbs);
+        let add_trunc_carry_base = offset;
+        offset += add_trunc_carry_columns(data_limbs);
 
         // Chunk decomposition columns
         let bitwise_chunks_base = offset;
@@ -334,6 +346,8 @@ impl ColumnIndices {
             decoded_imm_funct,
             is_imm,
             imm_sign_bit,
+            imm_limb_0,
+            imm_limb_1,
             family_selectors_base,
             bitwise_indicators_base,
             load_indicators_base,
@@ -351,6 +365,7 @@ impl ColumnIndices {
             zero_flag,
             add_carry_base,
             sub_borrow_base,
+            add_trunc_carry_base,
             bitwise_chunks_base,
             range_chunks_base,
             mul_operand_chunks_base,
@@ -472,6 +487,17 @@ impl ColumnIndices {
     pub fn sub_borrow(&self, limb_idx: usize) -> usize {
         debug_assert!(limb_idx < self.data_limbs.saturating_sub(1));
         self.sub_borrow_base + limb_idx
+    }
+
+    /// Get ADD/ADDI truncation carry column index for a specific limb
+    ///
+    /// trunc_carry[i] = 1 when rs1[i] + operand2[i] + carry[i-1] >= 2^limb_bits
+    /// This is used for limb 1+ to handle overflow in multi-limb addition
+    /// For 2-limb arithmetic, trunc_carry[0] handles overflow at limb[1]
+    #[inline]
+    pub fn add_trunc_carry(&self, limb_idx: usize) -> usize {
+        debug_assert!(limb_idx < self.data_limbs.saturating_sub(1));
+        self.add_trunc_carry_base + limb_idx
     }
 
     /// Get bitwise rs1 chunk0 column index

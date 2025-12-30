@@ -153,7 +153,7 @@ mod tests {
 
         // Check VK has correct metadata
         assert_eq!(proof.verifying_key.metadata.backend_name, "Plonky3");
-        assert_eq!(proof.verifying_key.program_params.trace_width, 254); // +56 hierarchical columns (chunk-based MUL)
+        assert_eq!(proof.verifying_key.program_params.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
         assert_eq!(proof.verifying_key.stark_config.field_prime, crate::types::MERSENNE31_PRIME as u64);
     }
 

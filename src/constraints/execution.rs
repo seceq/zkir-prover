@@ -205,12 +205,15 @@ impl ZkIrAir {
                     .assert_bool(carry);
             } else if limb_idx > 0 && self.config.data_limbs > 1 {
                 // Limb i > 0: Include carry from previous limb
-                // Constraint: rd[i] - rs1[i] - rs2[i] - carry[i-1] = 0
+                // The result may overflow 2^20, so we need a truncation carry
+                // Use dedicated add_trunc_carry column (Option A clean design)
+                // Constraint: rd[i] + trunc_carry[i-1] * 2^20 = rs1[i] + rs2[i] + carry[i-1]
                 let prev_carry: AB::Expr = local[self.col_add_carry(limb_idx - 1)].into();
+                let trunc_carry: AB::Expr = local[self.col_add_trunc_carry(limb_idx - 1)].into();
                 builder
                     .when(sel_arithmetic.clone())
                     .assert_zero(rd_not_r0_rtype.clone() * is_rtype.clone() * is_add.clone() *
-                        (rd_next.clone() - rs1_val.clone() - rs2_val.clone() - prev_carry));
+                        (rd_next.clone() + trunc_carry.clone() * limb_max.clone() - rs1_val.clone() - rs2_val.clone() - prev_carry));
             } else {
                 // Single limb (data_limbs == 1): Original constraint
                 builder
@@ -731,11 +734,18 @@ impl ZkIrAir {
         let imm_raw: AB::Expr = local[imm_col].into();
         let sign_bit: AB::Expr = local[sign_bit_col].into();
 
-        // Sign extension for 17-bit immediate
-        // If sign_bit = 1: imm_extended = imm_raw - 2^17
-        // If sign_bit = 0: imm_extended = imm_raw
-        let sign_extend_offset = AB::F::from_canonical_u32(1u32 << 17); // 2^17
-        let imm_extended = imm_raw - sign_bit.clone() * sign_extend_offset;
+        // Sign-extended immediate limbs are now stored in dedicated columns
+        // These are populated during witness generation and verified by validity constraints
+        // - imm_limb_0: 17-bit immediate sign-extended to 20-bit (imm_raw + sign_bit * (2^20 - 2^17))
+        // - imm_limb_1: all 1s if negative (sign_bit=1), else 0
+        //
+        // This ensures ADDI with negative immediates produces correct 40-bit two's complement.
+        // Example: imm = -1 (0x1FFFF) → sign_bit = 1
+        //   imm_limb_0 = 1048575 (0xFFFFF) from column
+        //   imm_limb_1 = 1048575 (0xFFFFF) from column
+        //   40-bit result = 0xFFFFFFFFFF = -1 in two's complement
+        let imm_limb_0: AB::Expr = local[self.col_imm_limb_0()].into();
+        let imm_limb_1: AB::Expr = local[self.col_imm_limb_1()].into();
 
         // Read boolean opcode flag columns for arithmetic I-type instructions
         // These are boolean (0 or 1) flags that indicate which specific opcode is active
@@ -785,17 +795,20 @@ impl ZkIrAir {
                 rs1_val = rs1_val + rs1_indicator * rs1_reg;
             }
 
-            // For immediate operations, the immediate value only affects limb 0
-            // Higher limbs are affected only by carries
+            // For immediate operations, get the sign-extended limb value
             let imm_for_limb = if limb_idx == 0 {
-                imm_extended.clone()
+                imm_limb_0.clone()
+            } else if limb_idx == 1 {
+                imm_limb_1.clone()
             } else {
-                AB::Expr::ZERO
+                // For limbs > 1 (if we ever extend to more than 2 limbs), use sign extension
+                sign_bit.clone() * AB::F::from_canonical_u32((1u32 << self.config.limb_bits) - 1)
             };
 
-            // === ADDI with carry propagation ===
-            // For limb 0: rd[0] + carry[0] * 2^limb_bits = rs1[0] + imm
-            // For limb i > 0: rd[i] = rs1[i] + carry[i-1]
+            // === ADDI with carry propagation and sign-extended immediate limbs ===
+            // For limb 0: rd[0] + carry[0] * 2^limb_bits = rs1[0] + imm_limb_0
+            // For limb 1: rd[1] + carry[1] * 2^limb_bits = rs1[1] + imm_limb_1 + carry[0]
+            // The final carry (if any) is discarded (40-bit truncation)
             if limb_idx == 0 && self.config.data_limbs > 1 {
                 // Limb 0: Use carry to handle overflow
                 let carry: AB::Expr = local[self.col_add_carry(0)].into();
@@ -807,12 +820,16 @@ impl ZkIrAir {
                 // Verify carry is boolean when ADDI is active
                 // (This is already verified in the R-type ADD constraint for the same carry column)
             } else if limb_idx > 0 && self.config.data_limbs > 1 {
-                // Limb i > 0: Include carry from previous limb
+                // Limb i > 0: Include carry from previous limb AND sign-extended immediate
+                // For negative immediates, imm_limb_1 contributes to the result
+                // The result may overflow 2^20, so we need a truncation carry
+                // Use dedicated add_trunc_carry column (Option A clean design)
                 let prev_carry: AB::Expr = local[self.col_add_carry(limb_idx - 1)].into();
+                let trunc_carry: AB::Expr = local[self.col_add_trunc_carry(limb_idx - 1)].into();
                 builder
                     .when(sel_arithmetic.clone())
                     .assert_zero(rd_not_r0.clone() * is_imm_flag.clone() * is_addi.clone() *
-                        (rd_next.clone() - rs1_val.clone() - prev_carry));
+                        (rd_next.clone() + trunc_carry.clone() * limb_max.clone() - rs1_val.clone() - imm_for_limb.clone() - prev_carry));
             } else {
                 // Single limb: Original constraint
                 builder
@@ -845,6 +862,46 @@ impl ZkIrAir {
         // builder
         //     .when(sel_arithmetic)
         //     .assert_zero(sign_bit.clone() * (sign_bit - AB::Expr::ONE));
+
+        // === Phase 4: Immediate Validity Constraints ===
+        // Verify that imm_limb columns are correctly computed from imm_raw and sign_bit
+        // These constraints ensure the witness generator computed the sign-extension correctly
+        //
+        // IMPORTANT: Only ADDI uses sign-extended immediates in the arithmetic family.
+        // Logical immediates (ANDI, ORI, XORI) use zero-extension and are validated
+        // in the logical constraints section.
+
+        // When is_imm=1 and is_addi=1, verify sign-extension:
+        // 1. imm_limb_0 = imm_raw + sign_bit * (2^20 - 2^17)
+        // 2. imm_limb_1 = sign_bit * (2^20 - 1)
+        // When is_imm=0 (R-type), both should be 0
+
+        let sign_extend_limb0_offset = AB::F::from_canonical_u32((1u32 << 20) - (1u32 << 17)); // 917504
+        let sign_extend_limb1_value = AB::F::from_canonical_u32((1u32 << 20) - 1); // 1048575
+
+        // Constraint 1: imm_limb_0 = imm_raw + sign_bit * sign_extend_limb0_offset (when is_addi=1)
+        // Guard with is_imm_flag AND is_addi to only apply to ADDI instructions
+        builder
+            .when(sel_arithmetic.clone())
+            .assert_zero(is_imm_flag.clone() * is_addi.clone() *
+                (imm_limb_0.clone() - imm_raw.clone() - sign_bit.clone() * sign_extend_limb0_offset));
+
+        // Constraint 2: imm_limb_1 = sign_bit * (2^20 - 1) (when is_addi=1)
+        builder
+            .when(sel_arithmetic.clone())
+            .assert_zero(is_imm_flag.clone() * is_addi.clone() *
+                (imm_limb_1.clone() - sign_bit.clone() * sign_extend_limb1_value));
+
+        // Constraint 3: When is_imm=0 (R-type), immediate limbs should be 0
+        // (1 - is_imm) * imm_limb_0 = 0
+        builder
+            .when(sel_arithmetic.clone())
+            .assert_zero((AB::Expr::ONE - is_imm_flag.clone()) * imm_limb_0.clone());
+
+        // (1 - is_imm) * imm_limb_1 = 0
+        builder
+            .when(sel_arithmetic)
+            .assert_zero((AB::Expr::ONE - is_imm_flag) * imm_limb_1);
 
         // TODO: Implement proper multi-limb multiplication with carries
     }
@@ -1978,11 +2035,16 @@ impl ZkIrAir {
 
         // rd = pc + 4 constraint (return address, same for both JAL and JALR)
         // Using dynamic rd selection
-        for limb_idx in 0..self.config.data_limbs as usize {
-            let rd_indicator_0: AB::Expr = local[self.col_rd_indicator(0)].into();
-            let rd_col_0 = self.col_register(0, limb_idx);
-            let mut rd_next = rd_indicator_0.clone() * next[rd_col_0].into();
+        //
+        // IMPORTANT: When rd=R0, writing is a no-op (R0 is hardwired to 0).
+        // We skip this constraint when rd=R0 by using (1 - rd_indicator_0) as a condition.
+        let rd_indicator_0: AB::Expr = local[self.col_rd_indicator(0)].into();
+        let rd_is_not_r0 = AB::Expr::ONE - rd_indicator_0;
 
+        for limb_idx in 0..self.config.data_limbs as usize {
+            let mut rd_next: AB::Expr = AB::Expr::ZERO;
+
+            // Only sum non-R0 registers (start from 1)
             for reg_idx in 1..16 {
                 let rd_indicator: AB::Expr = local[self.col_rd_indicator(reg_idx)].into();
                 let rd_col = self.col_register(reg_idx, limb_idx);
@@ -1991,10 +2053,11 @@ impl ZkIrAir {
             }
 
             // rd = pc + 4 (return address) for first limb only
-            // Note: pc might span multiple limbs for large address spaces
+            // Only enforce when rd != R0 (writing to R0 is a no-op)
             if limb_idx == 0 {
                 builder
                     .when(sel_jump.clone())
+                    .when(rd_is_not_r0.clone())
                     .assert_zero(rd_next - pc_local.clone() - four);
             }
         }

@@ -385,6 +385,53 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
     values.push(F::from_canonical_u32(is_imm));
     values.push(F::from_canonical_u32(sign_bit));
 
+    // === Section 4b: Sign-extended immediate limbs (2 columns) ===
+    // For ADDI and comparison I-type instructions: sign-extended immediate split into limbs
+    // For logical I-type instructions (ANDI, ORI, XORI): zero-extended (just use imm17)
+    // For R-type instructions: 0
+    //
+    // IMPORTANT: Only arithmetic operations (ADDI) and comparisons (SLTI, SLTUI) use
+    // sign-extended immediates. Logical operations (ANDI, ORI, XORI) and shifts (SLLI, etc.)
+    // use zero-extended immediates (no sign extension needed).
+    let (imm_limb_0, imm_limb_1) = if is_imm == 1 {
+        // Check if this is an instruction that needs sign-extension
+        // Sign-extension is only needed for ADDI (0x08) and comparison immediates (SLTI, SLTUI)
+        let needs_sign_extension = opcode == Opcode::Addi.to_u8() as u32;
+
+        if needs_sign_extension {
+            // Sign-extended immediate for ADDI
+            let limb_max = 1u32 << config.limb_bits;
+            // Sign extension: replicate bit 16 into bits 17-19 for 17-bit to 20-bit extension
+            // Offset = bits 17-19 set = 2^17 + 2^18 + 2^19 = 2^20 - 2^17 = 917504
+            let sign_extend_offset = limb_max - (1u32 << 17);  // NOT (1 << IMM_SIGN_BIT)!
+
+            // imm_limb_0 = imm_raw + sign_bit * sign_extend_offset
+            let imm_limb_0 = if sign_bit == 1 {
+                imm17 + sign_extend_offset
+            } else {
+                imm17
+            };
+
+            // imm_limb_1 = sign_bit * (2^limb_bits - 1)
+            let imm_limb_1 = if sign_bit == 1 {
+                limb_max - 1  // All 1s for negative (0xFFFFF for 20-bit)
+            } else {
+                0
+            };
+
+            (imm_limb_0, imm_limb_1)
+        } else {
+            // Zero-extended immediate for logical operations, shifts, etc.
+            // Just use the raw immediate value (no sign extension)
+            (imm17, 0)
+        }
+    } else {
+        (0, 0)  // R-type instructions have no immediate
+    };
+
+    values.push(F::from_canonical_u32(imm_limb_0));
+    values.push(F::from_canonical_u32(imm_limb_1));
+
     // === Section 5: Selector columns (10 columns) ===
     // Use Opcode family checks from zkir-spec
     let sel_arith = if Opcode::is_arithmetic_raw(opcode) { 1u32 } else { 0 };
@@ -645,31 +692,97 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
                     .copied()
                     .unwrap_or(0) as u64;
 
-                let rs2_or_imm = if is_add {
-                    trace_row.registers.get(rs2_idx)
+                // Compute carry based on whether the sum overflows the limb
+                let carry = if is_add {
+                    // R-type ADD: unsigned addition of two limbs
+                    let rs2_limb = trace_row.registers.get(rs2_idx)
                         .and_then(|r| r.get(carry_idx))
                         .copied()
-                        .unwrap_or(0) as u64
+                        .unwrap_or(0) as u64;
+                    let sum = rs1_limb + rs2_limb;
+                    if sum >= limb_max { 1u32 } else { 0u32 }
                 } else {
-                    // ADDI: immediate only affects limb 0
-                    if carry_idx == 0 { imm17 as u64 } else { 0 }
-                };
+                    // ADDI: The constraint uses sign-extended immediate limbs:
+                    //   rd[0] + carry[0] * 2^20 = rs1[0] + imm_limb_0
+                    //   rd[1] = rs1[1] + imm_limb_1 + carry[0]
+                    // Where:
+                    //   imm_limb_0 = imm_raw + sign_bit * (2^20 - 2^17)
+                    //   imm_limb_1 = sign_bit * (2^20 - 1)
+                    //
+                    // Carry[0] = 1 iff rs1[0] + imm_limb_0 >= 2^20
+                    let sign_bit = if (imm17 & (1 << 16)) != 0 { 1u64 } else { 0u64 };
+                    let sign_extend_limb0_offset = (1u64 << 20) - (1u64 << 17); // 917504
+                    let sign_extend_limb1_value = (1u64 << 20) - 1; // 1048575
 
-                // For the first carry (carry_idx=0), there's no previous carry
-                // For subsequent carries, we'd need to track the chain
-                // Simplified: compute carry for limb 0 -> limb 1
-                let sum = rs1_limb + rs2_or_imm;
-                let carry = if sum >= limb_max { 1u32 } else { 0u32 };
+                    if carry_idx == 0 {
+                        // Compute imm_limb_0
+                        let imm_limb_0 = imm17 as u64 + sign_bit * sign_extend_limb0_offset;
+
+                        // Carry needed if rs1[0] + imm_limb_0 >= 2^20
+                        let sum = rs1_limb + imm_limb_0;
+                        if sum >= limb_max { 1u32 } else { 0u32 }
+                    } else {
+                        // For limb > 0: carry[i] = 1 iff rs1[i] + imm_limb_i + carry[i-1] >= 2^20
+                        let imm_limb_i = sign_bit * sign_extend_limb1_value;
+
+                        // First, recompute carry[0] for the chain
+                        let imm_limb_0 = imm17 as u64 + sign_bit * sign_extend_limb0_offset;
+                        let rs1_0 = trace_row.registers.get(rs1 as usize)
+                            .and_then(|r| r.get(0))
+                            .copied()
+                            .unwrap_or(0) as u64;
+                        let sum_0 = rs1_0 + imm_limb_0;
+                        let prev_carry = if sum_0 >= limb_max { 1u64 } else { 0u64 };
+
+                        // For higher limbs, check if rs1[i] + imm_limb_i + prev_carry overflows
+                        let sum = rs1_limb + imm_limb_i + prev_carry;
+                        if sum >= limb_max { 1u32 } else { 0u32 }
+                    }
+                };
                 values.push(F::from_canonical_u32(carry));
             } else {
                 values.push(F::ZERO);
             }
         }
 
-        // Compute SUB borrows
-        // Note: ZKIR v3.4 spec doesn't have SUBI, only SUB
+        // Compute SUB borrows / ADD/ADDI truncation carries
+        // Note: ZKIR v3.4 spec doesn't have SUBI, so we repurpose sub_borrow for ADD/ADDI truncation carry
         for borrow_idx in 0..(data_limbs - 1) {
-            if is_sub {
+            if is_add {
+                // ADD truncation carry for limb 1+ (repurposing sub_borrow column)
+                // For limb i+1: trunc_carry = 1 if rs1[i+1] + rs2[i+1] + carry[i] >= 2^20
+                let limb_idx = borrow_idx + 1; // borrow_idx 0 corresponds to limb 1
+
+                let rs1_idx = rs1 as usize;
+                let rs2_idx = rs2 as usize;
+
+                // Get limb values
+                let rs1_limb = trace_row.registers.get(rs1_idx)
+                    .and_then(|r| r.get(limb_idx))
+                    .copied()
+                    .unwrap_or(0) as u64;
+                let rs2_limb = trace_row.registers.get(rs2_idx)
+                    .and_then(|r| r.get(limb_idx))
+                    .copied()
+                    .unwrap_or(0) as u64;
+
+                // Compute carry[0] (carry from limb 0 to limb 1)
+                let rs1_0 = trace_row.registers.get(rs1_idx)
+                    .and_then(|r| r.get(0))
+                    .copied()
+                    .unwrap_or(0) as u64;
+                let rs2_0 = trace_row.registers.get(rs2_idx)
+                    .and_then(|r| r.get(0))
+                    .copied()
+                    .unwrap_or(0) as u64;
+                let sum_0 = rs1_0 + rs2_0;
+                let prev_carry = if sum_0 >= limb_max { 1u64 } else { 0u64 };
+
+                // Check if limb 1 overflows
+                let sum = rs1_limb + rs2_limb + prev_carry;
+                let trunc_carry = if sum >= limb_max { 1u32 } else { 0u32 };
+                values.push(F::from_canonical_u32(trunc_carry));
+            } else if is_sub {
                 let rs1_idx = rs1 as usize;
                 let rs2_idx = rs2 as usize;
 
@@ -687,6 +800,86 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
                 // Borrow needed when rs1 < rs2
                 let borrow = if rs1_limb < rs2_limb { 1u32 } else { 0u32 };
                 values.push(F::from_canonical_u32(borrow));
+            } else if is_addi {
+                // ADDI truncation carry for limb 1+ (repurposing sub_borrow column)
+                // For limb i+1: trunc_carry = 1 if rs1[i+1] + imm_limb[i+1] + carry[i] >= 2^20
+                let limb_idx = borrow_idx + 1; // borrow_idx 0 corresponds to limb 1
+
+                let sign_bit = if (imm17 & (1 << 16)) != 0 { 1u64 } else { 0u64 };
+                let sign_extend_limb0_offset = (1u64 << 20) - (1u64 << 17); // 917504
+                let sign_extend_limb1_value = (1u64 << 20) - 1; // 1048575
+
+                // Get limb values
+                let rs1_limb = trace_row.registers.get(rs1 as usize)
+                    .and_then(|r| r.get(limb_idx))
+                    .copied()
+                    .unwrap_or(0) as u64;
+
+                // imm_limb for higher limbs
+                let imm_limb = sign_bit * sign_extend_limb1_value;
+
+                // Compute carry[0] (same as before)
+                let imm_limb_0 = imm17 as u64 + sign_bit * sign_extend_limb0_offset;
+                let rs1_0 = trace_row.registers.get(rs1 as usize)
+                    .and_then(|r| r.get(0))
+                    .copied()
+                    .unwrap_or(0) as u64;
+                let sum_0 = rs1_0 + imm_limb_0;
+                let prev_carry = if sum_0 >= limb_max { 1u64 } else { 0u64 };
+
+                // Check if limb 1 overflows
+                let sum = rs1_limb + imm_limb + prev_carry;
+                let trunc_carry = if sum >= limb_max { 1u32 } else { 0u32 };
+                values.push(F::from_canonical_u32(trunc_carry));
+            } else {
+                values.push(F::ZERO);
+            }
+        }
+
+        // Compute ADD/ADDI truncation carries (NEW dedicated columns, not repurposed)
+        // These columns detect when limb overflow occurs in multi-limb addition
+        for trunc_idx in 0..(data_limbs - 1) {
+            if is_add || is_addi {
+                let limb_idx = trunc_idx + 1; // trunc_idx 0 corresponds to limb 1
+
+                let rs1_idx = rs1 as usize;
+
+                // Get limb values for limb_idx
+                let rs1_limb = trace_row.registers.get(rs1_idx)
+                    .and_then(|r| r.get(limb_idx))
+                    .copied()
+                    .unwrap_or(0) as u64;
+
+                // Compute carry from previous limb (limb 0)
+                let rs1_0 = trace_row.registers.get(rs1_idx)
+                    .and_then(|r| r.get(0))
+                    .copied()
+                    .unwrap_or(0) as u64;
+
+                let (operand2_0, operand2_limb) = if is_add {
+                    // R-type ADD: use rs2
+                    let rs2_idx = rs2 as usize;
+                    let rs2_0 = trace_row.registers.get(rs2_idx)
+                        .and_then(|r| r.get(0))
+                        .copied()
+                        .unwrap_or(0) as u64;
+                    let rs2_limb = trace_row.registers.get(rs2_idx)
+                        .and_then(|r| r.get(limb_idx))
+                        .copied()
+                        .unwrap_or(0) as u64;
+                    (rs2_0, rs2_limb)
+                } else {
+                    // I-type ADDI: use sign-extended immediate (computed above)
+                    (imm_limb_0 as u64, imm_limb_1 as u64)
+                };
+
+                let sum_0 = rs1_0 + operand2_0;
+                let prev_carry = if sum_0 >= limb_max { 1u64 } else { 0u64 };
+
+                // Check if limb overflows
+                let sum = rs1_limb + operand2_limb + prev_carry;
+                let trunc_carry = if sum >= limb_max { 1u32 } else { 0u32 };
+                values.push(F::from_canonical_u32(trunc_carry));
             } else {
                 values.push(F::ZERO);
             }

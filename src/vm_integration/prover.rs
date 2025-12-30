@@ -436,4 +436,58 @@ mod tests {
         let (proof, vk) = prover.prove_program(&program, &[]).unwrap();
         assert!(prover.verify(&proof, &vk).unwrap());
     }
+
+    #[test]
+    fn test_vm_prover_stack_frame() {
+        // Test program that mimics C-compiled code with stack frame
+        // This tests the pattern that causes OodEvaluationMismatch
+        //
+        // NOTE: 17-bit signed immediates have range [-65536, 65535].
+        // To initialize SP to 0x10000 (65536), we need two ADDIs since
+        // 65536 would have bit 16 set and be treated as negative.
+        let instructions = vec![
+            // Initialize stack pointer: R2 = 0x8000 (32768) - first half
+            Instruction::Addi {
+                rd: Register::R2,
+                rs1: Register::R0,
+                imm: 0x8000,
+            },
+            // R2 = R2 + 0x8000 = 0x10000 (65536) - second half
+            Instruction::Addi {
+                rd: Register::R2,
+                rs1: Register::R2,
+                imm: 0x8000,
+            },
+            // Allocate stack frame: R2 = R2 - 16
+            Instruction::Addi {
+                rd: Register::R2,
+                rs1: Register::R2,
+                imm: -16,
+            },
+            // Save return address (R1) to stack: mem[R2 + 12] = R1
+            Instruction::Sw {
+                rs1: Register::R2,
+                rs2: Register::R1,
+                imm: 12,
+            },
+            // Compute result: R15 = 42
+            Instruction::Addi {
+                rd: Register::R15,
+                rs1: Register::R0,
+                imm: 42,
+            },
+            Instruction::Ebreak,
+        ];
+
+        let mut program = Program::new();
+        program.code = instructions
+            .iter()
+            .map(|inst| zkir_assembler::encode(inst))
+            .collect();
+        program.header.code_size = (program.code.len() * 4) as u32;
+
+        let prover = VMProver::fast_test_config();
+        let (proof, vk) = prover.prove_program(&program, &[]).unwrap();
+        assert!(prover.verify(&proof, &vk).unwrap());
+    }
 }

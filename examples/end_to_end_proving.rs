@@ -36,7 +36,7 @@ fn main() {
         .expect("Proof generation failed");
     let prove_time = start.elapsed();
 
-    println!("✓ Proof generated successfully");
+    println!("Proof generated successfully");
     println!("  Time: {:?}", prove_time);
     println!("  Proof size: {} bytes", bincode::serialize(&proof).unwrap().len());
 
@@ -46,7 +46,7 @@ fn main() {
     let verified = prover.verify(&proof, &vk).expect("Verification failed");
     let verify_time = start.elapsed();
 
-    println!("✓ Proof verified successfully");
+    println!("Proof verified successfully");
     println!("  Time: {:?}", verify_time);
     println!("  Valid: {}", verified);
 
