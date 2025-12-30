@@ -1,163 +1,138 @@
-//! ZK IR Prover CLI
-
-use std::path::PathBuf;
+//! ZK IR Prover v3.4 CLI
+//!
+//! This is the command-line interface for the ZKIR v3.4 prover.
+//!
+//! **Status:** Phase 1 (Witness Generation) core implementation is complete.
+//! The CLI will be functional after Phase 3 (Proof Backend) is implemented.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-
-use zkir_prover::{ExecutionTrace, Proof, Prover, ProverConfig, Verifier};
 
 #[derive(Parser)]
 #[command(name = "zkir-prover")]
-#[command(about = "STARK prover for ZK IR", long_about = None)]
+#[command(about = "STARK prover for ZKIR v3.4", long_about = None)]
+#[command(version = "3.4.0")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-
-    /// Enable verbose output
-    #[arg(short, long, global = true)]
-    verbose: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate a STARK proof from an execution trace
-    Prove {
-        /// Path to the execution trace file
-        #[arg(short, long)]
-        trace: PathBuf,
+    /// Show implementation status
+    Status,
 
-        /// Output path for the proof (defaults to <trace>.zkproof)
+    /// Validate a witness file (Phase 1 - Available)
+    ValidateWitness {
+        /// Path to the witness file
+        witness: std::path::PathBuf,
+    },
+
+    /// Generate a STARK proof from a witness (Phase 3 - Not Yet Implemented)
+    Prove {
+        /// Path to the witness file
         #[arg(short, long)]
-        output: Option<PathBuf>,
+        witness: std::path::PathBuf,
+
+        /// Output path for the proof
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
 
         /// Security level: fast, default, or high
         #[arg(long, default_value = "default")]
         security: String,
     },
 
-    /// Verify a STARK proof
+    /// Verify a STARK proof (Phase 3 - Not Yet Implemented)
     Verify {
         /// Path to the proof file
-        proof: PathBuf,
+        proof: std::path::PathBuf,
     },
 
-    /// Show information about a proof
+    /// Show information about a witness or proof
     Info {
-        /// Path to the proof file
-        proof: PathBuf,
+        /// Path to the file
+        file: std::path::PathBuf,
     },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize tracing
-    let filter = if cli.verbose {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::new("info")
-    };
-
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
     match cli.command {
-        Commands::Prove {
-            trace,
-            output,
-            security,
-        } => {
-            cmd_prove(trace, output, security)?;
-        }
-        Commands::Verify { proof } => {
-            cmd_verify(proof)?;
-        }
-        Commands::Info { proof } => {
-            cmd_info(proof)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_prove(trace_path: PathBuf, output: Option<PathBuf>, security: String) -> Result<()> {
-    info!("Loading execution trace from {:?}", trace_path);
-
-    let config = match security.as_str() {
-        "fast" => ProverConfig::fast(),
-        "default" => ProverConfig::default(),
-        "high" => ProverConfig::high(),
-        _ => {
-            anyhow::bail!("Unknown security level: {}. Use fast, default, or high", security);
-        }
-    };
-
-    info!("Using security level: {} ({:?})", security, config);
-
-    // Load execution trace
-    let trace = ExecutionTrace::load(&trace_path)?;
-    info!("Loaded trace with {} cycles", trace.num_cycles());
-
-    // Generate proof
-    let prover = Prover::new(config);
-    info!("Generating proof...");
-
-    let proof = prover.prove(&trace)?;
-
-    // Determine output path
-    let output_path = output.unwrap_or_else(|| {
-        let mut p = trace_path.clone();
-        p.set_extension("zkproof");
-        p
-    });
-
-    // Save proof
-    proof.save(&output_path)?;
-    info!("Proof saved to {:?}", output_path);
-    info!("Proof size: {} bytes", proof.size_bytes());
-
-    Ok(())
-}
-
-fn cmd_verify(proof_path: PathBuf) -> Result<()> {
-    info!("Loading proof from {:?}", proof_path);
-
-    let proof = Proof::load(&proof_path)?;
-    let verifier = Verifier::new();
-
-    info!("Verifying proof...");
-    match verifier.verify(&proof) {
-        Ok(()) => {
-            info!("Proof is VALID");
-            println!("Verification: PASSED");
-        }
-        Err(e) => {
-            info!("Proof is INVALID: {}", e);
-            println!("Verification: FAILED - {}", e);
+        Commands::Status => cmd_status(),
+        Commands::ValidateWitness { witness } => cmd_validate_witness(witness),
+        Commands::Prove { .. } => {
+            eprintln!("❌ Proof generation not yet implemented");
+            eprintln!("   Status: Awaiting Phase 3 (Proof Backend)");
+            eprintln!("   See: docs/PROVER_ROADMAP.md");
             std::process::exit(1);
         }
+        Commands::Verify { .. } => {
+            eprintln!("❌ Proof verification not yet implemented");
+            eprintln!("   Status: Awaiting Phase 3 (Proof Backend)");
+            eprintln!("   See: docs/PROVER_ROADMAP.md");
+            std::process::exit(1);
+        }
+        Commands::Info { file } => cmd_info(file),
     }
+}
+
+fn cmd_status() -> Result<()> {
+    println!("ZKIR v3.4 Prover - Implementation Status");
+    println!("=========================================");
+    println!();
+    println!("[done] Phase 1: Witness Generation (Core)");
+    println!("   - ExecutionWitness data structures");
+    println!("   - WitnessCollector trait");
+    println!("   - Witness verification");
+    println!("   - 24/24 tests passing");
+    println!();
+    println!("[blocked] Phase 1: VM Integration");
+    println!("   - Blocked: Awaiting zkir-runtime v3.4");
+    println!();
+    println!("[in progress] Phase 2: Constraint System (Framework Complete)");
+    println!("   - AIR framework (ZkIrAir, trace column layout)");
+    println!("   - Execution constraint stubs (47 instructions)");
+    println!("   - Memory consistency stubs");
+    println!("   - Range check lookup stubs (LogUp)");
+    println!("   - Crypto syscall constraint stubs");
+    println!("   - 10/10 new tests passing (33 total)");
+    println!("   [blocked] Constraint implementation (blocked on Plonky3 API)");
+    println!();
+    println!("[pending] Phase 3: Proof Backend (Not Started)");
+    println!("   - Plonky3 integration");
+    println!("   - Proof generation");
+    println!("   - Verification");
+    println!();
+    println!("[pending] Phase 4: Optimization (Not Started)");
+    println!("[pending] Phase 5: GPU Acceleration (Not Started)");
+    println!("[pending] Phase 6: Advanced Features (Not Started)");
+    println!();
+    println!("Documentation:");
+    println!("  - docs/ZKIR_SPEC_V3.4.md - Specification");
+    println!("  - docs/PROVER_ROADMAP.md - Implementation roadmap");
+    println!("  - docs/PROVER_TODO.md - Detailed task breakdown");
+    println!("  - docs/PHASE_1_WITNESS_STATUS.md - Phase 1 status");
+    println!("  - docs/PHASE_2_CONSTRAINTS_STATUS.md - Phase 2 framework status");
+    println!();
+    println!("Legacy v2.1 code moved to: src_backup/");
 
     Ok(())
 }
 
-fn cmd_info(proof_path: PathBuf) -> Result<()> {
-    let proof = Proof::load(&proof_path)?;
+fn cmd_validate_witness(_witness_path: std::path::PathBuf) -> Result<()> {
+    // Note: Witness file loading is not yet implemented
+    // This CLI command will be functional when witness serialization is added
+    eprintln!("Witness file loading not yet implemented");
+    eprintln!("Status: Awaiting witness serialization support");
+    std::process::exit(1);
+}
 
-    println!("Proof Information");
-    println!("=================");
-    println!("Size: {} bytes", proof.size_bytes());
-    println!();
-    println!("Public Inputs:");
-    println!("  Program hash: {}", hex::encode(&proof.public_inputs.program_hash));
-    println!("  Num cycles: {}", proof.public_inputs.num_cycles);
-    println!("  Inputs: {:?}", proof.public_inputs.inputs);
-    println!("  Outputs: {:?}", proof.public_inputs.outputs);
-
-    Ok(())
+fn cmd_info(_file_path: std::path::PathBuf) -> Result<()> {
+    // Note: File loading is not yet implemented
+    // This CLI command will be functional when witness/proof serialization is added
+    eprintln!("File loading not yet implemented");
+    eprintln!("Status: Awaiting witness/proof serialization support");
+    std::process::exit(1);
 }

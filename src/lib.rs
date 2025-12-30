@@ -1,38 +1,80 @@
-//! ZK IR Prover v2.1
+//! ZK IR Prover v3.4
 //!
-//! STARK prover for ZK IR using Plonky3 with Baby Bear field.
+//! STARK prover for ZK IR v3.4 using Plonky3 with Mersenne 31 field.
 //!
 //! # Architecture
 //!
 //! The prover uses a multi-chip design:
-//! - CPU Chip: Executes ZK IR instructions (~32 trace columns)
-//! - Memory Chip: Enforces memory consistency
-//! - Range Check Chip: Validates 32-bit values
+//! - CPU Chip: Executes ZKIR v3.4 instructions with variable limb arithmetic
+//! - Memory Chip: Enforces memory consistency with timestamp ordering
+//! - Range Check Chip: Validates limb values using chunk decomposition
 //! - Syscall Chips: Dedicated chips for cryptographic operations
+//!
+//! # ZKIR v3.4 Features
+//!
+//! - **Variable limb architecture**: Configurable 16-30 bit limbs (default: 20-bit)
+//! - **40-bit values**: Default configuration uses 2×20-bit limbs
+//! - **47 instructions**: Complete RISC-style instruction set
+//! - **Bound tracking**: Optimizes constraint generation by tracking value bounds
+//! - **Adaptive crypto**: Cryptographic syscalls use adaptive internal representation
+//! - **Deferred range checking**: Leverages headroom for batched range checks
+//!
+//! # Implementation Status
+//!
+//! - Phase 1: Witness Generation (Core - Complete, VM Integration - Pending)
+//! - Phase 2: Constraint System (Framework - In Progress)
+//! - Phase 3: Proof Backend (Not Started)
+//! - Phase 4: Optimization (Not Started)
+//! - Phase 5: GPU Acceleration (Not Started)
+//! - Phase 6: Advanced Features (Not Started)
+//!
+//! # Type System
+//!
+//! Types are imported from `zkir-spec` as the single source of truth.
+//! Use `zkir_prover::types::*` for access to all shared types.
+//!
+//! # Legacy Code
+//!
+//! The v2.1 implementation (32-bit only) has been moved to `src_backup/` for reference.
 
-pub mod chips;
-pub mod machine;
-pub mod proof;
-pub mod prover;
-pub mod trace;
-pub mod verifier;
+pub mod types;
+pub mod columns;
+pub mod witness;
+pub mod constraints;
+pub mod backend;
+pub mod vm_integration;
 
-pub use machine::ZkIrMachine;
-pub use proof::{Proof, PublicInputs};
-pub use prover::{Prover, ProverConfig};
-pub use trace::ExecutionTrace;
-pub use verifier::Verifier;
+// Re-export main witness types for convenience
+pub use witness::{
+    MemoryOp, WitnessCollector,
+    ProgramConfig, ValueBound, CryptoType, CryptoWitness,
+    RangeCheckWitness, PublicIO, TraceCollector,
+    verify_witness,
+    MainWitness, MainTraceRow, MainWitnessBuilder,
+};
 
-use p3_baby_bear::BabyBear;
+// Re-export key types from types module
+pub use types::{
+    Config, Opcode, InstructionFamily,
+    NUM_REGISTERS, MERSENNE31_PRIME,
+};
 
-/// The field type used throughout the prover (Baby Bear: p = 2^31 - 2^27 + 1)
-pub type F = BabyBear;
+// Re-export high-level API from vm_integration
+pub use vm_integration::{VMProver, prove, prove_test, verify};
 
-/// Baby Bear prime: 2^31 - 2^27 + 1 = 2013265921
-pub const BABY_BEAR_PRIME: u32 = 2013265921;
+use p3_mersenne_31::Mersenne31;
 
-/// Number of registers in the ZK IR VM
-pub const NUM_REGISTERS: usize = 32;
+/// The field type used throughout the prover (Mersenne 31: p = 2^31 - 1)
+pub type F = Mersenne31;
 
-/// Word size in bytes
-pub const WORD_SIZE: usize = 4;
+// Default configuration values (for backward compatibility)
+// New code should use types::Config::DEFAULT
+
+/// Default limb size in bits
+pub const DEFAULT_LIMB_BITS: u8 = 20;
+
+/// Default number of data limbs
+pub const DEFAULT_DATA_LIMBS: u8 = 2;
+
+/// Default number of address limbs
+pub const DEFAULT_ADDR_LIMBS: u8 = 2;

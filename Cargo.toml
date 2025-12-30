@@ -3,7 +3,7 @@ name = "zkir-prover"
 version = "0.1.0"
 edition = "2021"
 authors = ["seceq"]
-description = "STARK prover for ZK IR using Plonky3 with Baby Bear field"
+description = "STARK prover for ZK IR using Plonky3 with Mersenne 31 field"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/seceq/zkir-prover"
 
@@ -11,7 +11,9 @@ repository = "https://github.com/seceq/zkir-prover"
 # Plonky3 - STARK proving system (pinned to stable release)
 p3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
 p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
+p3-mersenne-31 = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
+p3-circle = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
 p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
 p3-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
 p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "1ba4e5c" }
@@ -44,12 +46,26 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 hex = "0.4"
 byteorder = "1"
+sha2 = "0.10"
+
+# ZKIR VM integration (path dependency to local VM)
+zkir-runtime = { path = "../zkir/zkir-runtime" }
+zkir-spec = { path = "../zkir/zkir-spec" }
+zkir-assembler = { path = "../zkir/zkir-assembler" }
 
 [dev-dependencies]
 criterion = "0.5"
 
+[[example]]
+name = "end_to_end_proving"
+path = "examples/end_to_end_proving.rs"
+
 [[bench]]
-name = "prover_bench"
+name = "prover_benchmarks"
+harness = false
+
+[[bench]]
+name = "full_pipeline_benchmark"
 harness = false
 
 [profile.release]
