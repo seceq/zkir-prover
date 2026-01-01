@@ -378,9 +378,10 @@ mod tests {
     #[test]
     fn test_instruction_decoder_creation() {
         // Use valid addr_limbs (must be 1 or 2)
-        let config = crate::witness::ProgramConfig::new(20, 2, 2).unwrap();
+        let config = crate::witness::ProgramConfig::new(30, 20, 2, 2).unwrap();
         let decoder = InstructionDecoder::new(config);
-        assert_eq!(decoder.config.limb_bits, 20);
+        assert_eq!(decoder.config.limb_bits, 30);
+        assert_eq!(decoder.config.normalized_bits, 20);
         assert_eq!(decoder.config.data_limbs, 2);
     }
 

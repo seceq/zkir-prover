@@ -5,6 +5,9 @@
 
 use std::collections::HashMap;
 
+/// Size of the range check lookup table (2^10 = 1024 entries for 10-bit chunks)
+pub const RANGE_CHECK_TABLE_SIZE: usize = 1024;
+
 /// Multiplicity tracker for a single lookup table
 ///
 /// Tracks how many times each encoded entry is queried during execution.
@@ -56,23 +59,89 @@ impl Default for MultiplicityTracker {
     }
 }
 
+/// Dense array multiplicity tracker for range checks
+///
+/// This uses a fixed-size array for 10-bit range checks (0..1023).
+/// The entire 4 KB array fits in L1 cache, making it ~20× faster than HashMap.
+#[derive(Clone, Debug)]
+pub struct RangeCheckMultiplicities {
+    /// Dense array: 1024 entries × 4 bytes = 4 KB (fits in L1 cache!)
+    multiplicities: [u32; RANGE_CHECK_TABLE_SIZE],
+}
+
+impl RangeCheckMultiplicities {
+    /// Create a new range check multiplicity tracker
+    pub fn new() -> Self {
+        Self {
+            multiplicities: [0; RANGE_CHECK_TABLE_SIZE],
+        }
+    }
+
+    /// Record a range check lookup
+    #[inline]
+    pub fn record(&mut self, value: u32) {
+        debug_assert!(value < RANGE_CHECK_TABLE_SIZE as u32,
+            "Range check value {} exceeds table size {}", value, RANGE_CHECK_TABLE_SIZE);
+        self.multiplicities[value as usize] += 1;
+    }
+
+    /// Get the multiplicity for a value (0 if never queried)
+    #[inline]
+    pub fn get_multiplicity(&self, value: u32) -> u32 {
+        if value < RANGE_CHECK_TABLE_SIZE as u32 {
+            self.multiplicities[value as usize]
+        } else {
+            0
+        }
+    }
+
+    /// Iterate over all entries with non-zero multiplicity
+    pub fn iter_non_zero(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.multiplicities.iter()
+            .enumerate()
+            .filter(|(_, &m)| m != 0)
+            .map(|(i, &m)| (i as u32, m))
+    }
+
+    /// Total number of queries (sum of all multiplicities)
+    pub fn total_queries(&self) -> u32 {
+        self.multiplicities.iter().sum()
+    }
+
+    /// Number of distinct entries queried (non-zero multiplicities)
+    pub fn distinct_entries(&self) -> usize {
+        self.multiplicities.iter().filter(|&&m| m != 0).count()
+    }
+}
+
+impl Default for RangeCheckMultiplicities {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Multiplicity trackers for all lookup tables
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct LogUpMultiplicities {
-    /// AND operation lookups
+    /// AND operation lookups (HashMap for sparse storage)
     pub and_table: MultiplicityTracker,
-    /// OR operation lookups
+    /// OR operation lookups (HashMap for sparse storage)
     pub or_table: MultiplicityTracker,
-    /// XOR operation lookups
+    /// XOR operation lookups (HashMap for sparse storage)
     pub xor_table: MultiplicityTracker,
-    /// Range check lookups
-    pub range_table: MultiplicityTracker,
+    /// Range check lookups (Dense array - 4 KB, fits in L1 cache!)
+    pub range_table: RangeCheckMultiplicities,
 }
 
 impl LogUpMultiplicities {
     /// Create new multiplicity trackers
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            and_table: MultiplicityTracker::new(),
+            or_table: MultiplicityTracker::new(),
+            xor_table: MultiplicityTracker::new(),
+            range_table: RangeCheckMultiplicities::new(),
+        }
     }
 
     /// Record a bitwise AND lookup
@@ -102,9 +171,9 @@ impl LogUpMultiplicities {
     /// Record a range check lookup
     ///
     /// # Arguments
-    /// * `value` - The chunk value being range checked
+    /// * `value` - The chunk value being range checked (must be < 1024)
     pub fn record_range_check(&mut self, value: u32) {
-        self.range_table.record_query(value);
+        self.range_table.record(value);
     }
 
     /// Print statistics about multiplicities
@@ -122,6 +191,12 @@ impl LogUpMultiplicities {
         println!("  Range: {} queries, {} distinct entries",
             self.range_table.total_queries(),
             self.range_table.distinct_entries());
+    }
+}
+
+impl Default for LogUpMultiplicities {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

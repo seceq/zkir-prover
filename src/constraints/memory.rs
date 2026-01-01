@@ -260,6 +260,12 @@ impl ZkIrAir {
     /// - `timestamp`: Cycle number when operation occurred
     /// - `value_limbs`: Value read/written (multiple limbs)
     /// - `is_write`: 1 if write, 0 if read
+    ///
+    /// # Deferred Carry Model Note
+    ///
+    /// In the deferred carry (30+30) architecture:
+    /// - Addresses come from trace (accumulated, 30-bit limbs) → use limb_bits
+    /// - Values in memory ops are NORMALIZED (stores trigger normalization) → use normalized_bits
     pub fn encode_memory_operation<AB: AirBuilder>(
         &self,
         challenge: AB::Expr,
@@ -268,21 +274,24 @@ impl ZkIrAir {
         value_limbs: &[AB::Expr],
         is_write: AB::Expr,
     ) -> AB::Expr {
-        // Reconstruct multi-limb values using Horner's method
-        // For 2-limb address [a0, a1]: addr = a0 + a1 * limb_base
-        let limb_base_f = AB::F::from_canonical_u32(1 << self.config.limb_bits);
-        let limb_base = AB::Expr::from(limb_base_f);
+        // Address limbs come from trace (accumulated, 30-bit packing)
+        let addr_limb_base_f = AB::F::from_canonical_u32(1 << self.config.limb_bits);
+        let addr_limb_base = AB::Expr::from(addr_limb_base_f);
 
-        // Reconstruct address from limbs
+        // Reconstruct address from limbs (using limb_bits = 30)
         let mut addr = addr_limbs[0].clone();
         for i in 1..addr_limbs.len() {
-            addr = addr + addr_limbs[i].clone() * limb_base.clone();
+            addr = addr + addr_limbs[i].clone() * addr_limb_base.clone();
         }
 
-        // Reconstruct value from limbs
+        // Value limbs are NORMALIZED (stores trigger normalization, 20-bit packing)
+        let value_limb_base_f = AB::F::from_canonical_u32(1 << self.config.normalized_bits);
+        let value_limb_base = AB::Expr::from(value_limb_base_f);
+
+        // Reconstruct value from limbs (using normalized_bits = 20)
         let mut value = value_limbs[0].clone();
         for i in 1..value_limbs.len() {
-            value = value + value_limbs[i].clone() * limb_base.clone();
+            value = value + value_limbs[i].clone() * value_limb_base.clone();
         }
 
         // Encode using challenge-based Horner scheme:

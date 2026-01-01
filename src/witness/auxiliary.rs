@@ -171,7 +171,7 @@ pub fn compute_auxiliary_with_challenges<F: Field>(
 
     // Compute multiplicities from trace (if not already populated)
     // This ensures table sums match query sums even if multiplicities weren't tracked during witness generation
-    let multiplicities = compute_multiplicities_from_main_trace(&main.trace, config);
+    let multiplicities = compute_multiplicities_from_main_trace(main);
 
     // Compute LogUp table sums using bitwise challenge
     let table_sums = TableSums::compute(&multiplicities, challenges.logup_bitwise, config);
@@ -207,9 +207,9 @@ fn compute_logup_sums<F: Field>(
     let mut and_sum = F::ZERO;
     let mut or_sum = F::ZERO;
     let mut xor_sum = F::ZERO;
-    let mut range_sum = F::ZERO;
+    let mut range_sum = F::ZERO; // Updated at normalization points
 
-    let chunk_bits = config.limb_bits / 2;
+    let chunk_bits = config.normalized_bits / 2;  // 10-bit for 30+30 architecture
     let chunk_mask = (1u32 << chunk_bits) - 1;
     let shift_10 = F::from_canonical_u32(1 << 10);
     let shift_20 = F::from_canonical_u32(1 << 20);
@@ -291,30 +291,31 @@ fn compute_logup_sums<F: Field>(
             }
         }
 
-        // Range check LogUp: For arithmetic operations, accumulate 1/(α - chunk)
-        // for each chunk of the destination register limbs
-        let is_arithmetic = Opcode::is_arithmetic_raw(opcode);
-
-        if is_arithmetic && rd != 0 {
-            // Range check destination register limbs (except R0 which is always zero)
-            for limb_idx in 0..config.data_limbs as usize {
-                let rd_limb = trace_row.registers.get(rd)
-                    .and_then(|r| r.get(limb_idx))
-                    .copied()
-                    .unwrap_or(0);
-
-                // Split into chunks
-                let chunk_0 = rd_limb & chunk_mask;
-                let chunk_1 = rd_limb >> chunk_bits;
-
-                // LogUp contribution: 1/(α - chunk) for each chunk
+        // Phase 7b: Range check LogUp for normalized values (deferred carry model)
+        //
+        // At normalization points, add LogUp queries for:
+        // - Normalized limb chunks (2 per limb)
+        // - Carry values (1 per limb)
+        let current_cycle = trace_row.cycle;
+        let norm_events: Vec<_> = main.normalization_events.iter()
+            .filter(|event| event.cycle == current_cycle)
+            .collect();
+        for norm_event in norm_events {
+            // Range check normalized limb chunks
+            for &normalized_limb in &norm_event.normalized {
+                let chunk_0 = normalized_limb & chunk_mask;
+                let chunk_1 = normalized_limb >> chunk_bits;
                 let diff_0 = challenge - F::from_canonical_u32(chunk_0);
                 let diff_1 = challenge - F::from_canonical_u32(chunk_1);
-
                 let inv_0 = diff_0.try_inverse().unwrap_or(F::ZERO);
                 let inv_1 = diff_1.try_inverse().unwrap_or(F::ZERO);
-
                 range_sum = range_sum + inv_0 + inv_1;
+            }
+            // CRITICAL: Range check carries (prevents forged normalized values)
+            for &carry in &norm_event.carries {
+                let diff = challenge - F::from_canonical_u32(carry);
+                let inv = diff.try_inverse().unwrap_or(F::ZERO);
+                range_sum = range_sum + inv;
             }
         }
     }
@@ -333,17 +334,18 @@ fn compute_memory_permutation<F: Field>(
 
     for (row_idx, trace_row) in main.trace.iter().enumerate().take(actual_rows) {
         if let Some(ref mem_op) = trace_row.memory_op {
-            // Reconstruct address and value from limbs
-            let limb_base = 1u64 << config.limb_bits;
-
+            // Address: reconstructed with limb_bits (30-bit, from trace)
+            let addr_limb_base = 1u64 << config.limb_bits;
             let mut addr = 0u64;
             for (i, limb) in mem_op.address.iter().enumerate() {
-                addr += (*limb as u64) * limb_base.pow(i as u32);
+                addr += (*limb as u64) * addr_limb_base.pow(i as u32);
             }
 
+            // Value: reconstructed with normalized_bits (20-bit, stores are normalized)
+            let value_limb_base = 1u64 << config.normalized_bits;
             let mut value = 0u64;
             for (i, limb) in mem_op.value.iter().enumerate() {
-                value += (*limb as u64) * limb_base.pow(i as u32);
+                value += (*limb as u64) * value_limb_base.pow(i as u32);
             }
 
             memory_ops.push(MemoryOperation::new(
@@ -423,6 +425,10 @@ fn compute_memory_permutation<F: Field>(
 /// Encode a memory operation using Horner's method
 ///
 /// Encoding: addr + α(timestamp + α(value + α*is_write))
+///
+/// IMPORTANT: In the deferred carry model:
+/// - Addresses come from trace (accumulated, 30-bit limbs) → use limb_bits
+/// - Values in memory ops are NORMALIZED (stores trigger normalization) → use normalized_bits
 fn encode_memory_operation<F: Field>(
     addr_limbs: &[u32],
     timestamp: u64,
@@ -431,19 +437,23 @@ fn encode_memory_operation<F: Field>(
     challenge: F,
     config: &ProgramConfig,
 ) -> F {
-    let limb_base = F::from_canonical_u64(1u64 << config.limb_bits);
+    // Address limbs are from trace (accumulated, 30-bit packing)
+    let addr_limb_base = F::from_canonical_u64(1u64 << config.limb_bits);
 
-    // Reconstruct address from limbs
+    // Reconstruct address from limbs (using limb_bits = 30)
     let mut addr = F::ZERO;
     for (i, limb) in addr_limbs.iter().enumerate() {
-        let power = limb_base.exp_u64(i as u64);
+        let power = addr_limb_base.exp_u64(i as u64);
         addr = addr + F::from_canonical_u32(*limb) * power;
     }
 
-    // Reconstruct value from limbs
+    // Value limbs are NORMALIZED (stores trigger normalization, 20-bit packing)
+    let value_limb_base = F::from_canonical_u64(1u64 << config.normalized_bits);
+
+    // Reconstruct value from limbs (using normalized_bits = 20)
     let mut value = F::ZERO;
     for (i, limb) in value_limbs.iter().enumerate() {
-        let power = limb_base.exp_u64(i as u64);
+        let power = value_limb_base.exp_u64(i as u64);
         value = value + F::from_canonical_u32(*limb) * power;
     }
 
@@ -529,14 +539,14 @@ fn pad_auxiliary<F: Field>(
 /// lookup into the multiplicity tracker. Used when multiplicities weren't
 /// tracked during witness generation.
 fn compute_multiplicities_from_main_trace(
-    trace: &[MainTraceRow],
-    config: &ProgramConfig,
+    main: &MainWitness,
 ) -> LogUpMultiplicities {
     let mut multiplicities = LogUpMultiplicities::new();
-    let chunk_bits = config.limb_bits / 2;
+    let config = &main.config;
+    let chunk_bits = config.normalized_bits / 2;  // 10-bit for 30+30 architecture
     let chunk_mask = (1u32 << chunk_bits) - 1;
 
-    for trace_row in trace {
+    for trace_row in &main.trace {
         // Decode instruction with 7-bit opcode format
         let inst = trace_row.instruction;
         let opcode = extract_opcode(inst);
@@ -587,21 +597,29 @@ fn compute_multiplicities_from_main_trace(
             }
         }
 
-        // Record range check multiplicities for arithmetic operations
-        let is_arithmetic = Opcode::is_arithmetic_raw(opcode);
-        if is_arithmetic && rd != 0 {
-            for limb_idx in 0..config.data_limbs as usize {
-                let rd_limb = trace_row.registers.get(rd)
-                    .and_then(|r| r.get(limb_idx))
-                    .copied()
-                    .unwrap_or(0);
-
-                // Record each chunk for range checking
-                let chunk_0 = rd_limb & chunk_mask;
-                let chunk_1 = rd_limb >> chunk_bits;
-
+        // TODO(30+30): Range check multiplicity tracking temporarily disabled
+        // In the deferred model, register limbs can contain accumulated values (up to 30 bits),
+        // which cannot be decomposed into 10-bit chunks. Range check multiplicities should only
+        // be recorded AFTER normalization at observation points.
+        //
+        // DISABLED: Normalization multiplicity tracking (must match disabled query accumulation)
+        // Range check: Track normalized limbs and carries at normalization points
+        // Using dense array (4 KB) that fits in L1 cache!
+        let current_cycle = trace_row.cycle;
+        let norm_events: Vec<_> = main.normalization_events.iter()
+            .filter(|event| event.cycle == current_cycle)
+            .collect();
+        for norm_event in norm_events {
+            // Range check normalized limb chunks (2 chunks per limb)
+            for &normalized_limb in &norm_event.normalized {
+                let chunk_0 = normalized_limb & chunk_mask;
+                let chunk_1 = normalized_limb >> chunk_bits;
                 multiplicities.record_range_check(chunk_0);
                 multiplicities.record_range_check(chunk_1);
+            }
+            // CRITICAL: Range check carries (prevents forged normalized values)
+            for &carry in &norm_event.carries {
+                multiplicities.record_range_check(carry);
             }
         }
     }

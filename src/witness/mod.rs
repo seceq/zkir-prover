@@ -21,7 +21,7 @@ pub mod auxiliary;
 
 // Core trace exports
 pub use trace::{
-    MemoryOp, RangeCheckWitness, CryptoWitness, PublicIO,
+    MemoryOp, RangeCheckWitness, CryptoWitness, NormalizationWitness, PublicIO,
     ProgramConfig, ValueBound, CryptoType,
     MainWitness, MainTraceRow, MainWitnessBuilder,
 };
@@ -30,5 +30,8 @@ pub use auxiliary::{AuxWitness, compute_auxiliary, compute_auxiliary_with_challe
 // Other exports
 pub use collector::{WitnessCollector, TraceCollector};
 pub use verify::verify_witness;
-pub use multiplicity::{LogUpMultiplicities, MultiplicityTracker, encode_bitwise_triple, decode_bitwise_triple};
+pub use multiplicity::{
+    LogUpMultiplicities, MultiplicityTracker, RangeCheckMultiplicities,
+    encode_bitwise_triple, decode_bitwise_triple, RANGE_CHECK_TABLE_SIZE
+};
 pub use table_sums::{TableSums, compute_table_sum};

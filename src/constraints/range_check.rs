@@ -98,67 +98,67 @@ impl ZkIrAir {
         let range_sum_local: AB::Expr = local[self.col_logup_range()].into();
         let range_sum_next: AB::Expr = next[self.col_logup_range()].into();
 
-        // Get arithmetic selector - range checks apply to arithmetic operations
-        let sel_arithmetic: AB::Expr = local[self.col_sel_arithmetic()].into();
-
-        // Get destination register indicator for R0 (if rd=R0, no range check needed)
-        // R0 is hardwired to zero, so we skip range checks when rd=R0
-        let rd_is_r0: AB::Expr = local[self.col_rd_indicator(0)].into();
-
-        // Effective selector: arithmetic AND (rd != R0)
-        let sel_active = sel_arithmetic.clone() * (AB::Expr::ONE - rd_is_r0);
+        // Range checks only apply at normalization points
+        let norm_is_point_col = self.indices().norm_is_point();
+        let sel_active: AB::Expr = local[norm_is_point_col].into();
 
         let data_limbs = self.config.data_limbs as usize;
 
         // Accumulator delta
         let acc_delta = range_sum_next.clone() - range_sum_local.clone();
 
-        // For arithmetic operations, verify range check constraints for each limb
-        // The LogUp constraint for N lookups (2 chunks per limb × data_limbs limbs):
+        // At normalization points, verify range check constraints for normalized values + carries
+        // The LogUp constraint for N lookups:
+        //   - 2 chunks per normalized limb × data_limbs limbs = 4 lookups
+        //   - 1 carry per limb × data_limbs limbs = 2 lookups
+        //   Total: 6 lookups for 2-limb config
         //
         // delta * Π(diff_i) = Σ[Π(diff_j for j≠i)]
-        //
-        // For 2 chunks: delta * diff_0 * diff_1 = diff_1 + diff_0
-        // Which encodes: delta = 1/diff_0 + 1/diff_1
-        //
-        // For multiple limbs, we need to accumulate all contributions.
-        // With 2 limbs (4 chunks total): delta * d0 * d1 * d2 * d3 = d1*d2*d3 + d0*d2*d3 + d0*d1*d3 + d0*d1*d2
 
-        // Collect all chunk differences
-        let mut chunk_diffs: Vec<AB::Expr> = Vec::with_capacity(2 * data_limbs);
+        // Collect all chunk and carry differences
+        let mut chunk_diffs: Vec<AB::Expr> = Vec::with_capacity(3 * data_limbs); // 2 chunks + 1 carry per limb
         let challenge_expr: AB::Expr = AB::Expr::from(challenge);
-        let chunk_bits = self.config.limb_bits / 2;
+        let chunk_bits = self.config.normalized_bits / 2;
         let chunk_shift = AB::F::from_canonical_u32(1u32 << chunk_bits);
 
         for limb_idx in 0..data_limbs {
+            // Select normalized value from NEXT row (after normalization)
+            // normalized = Σ(norm_reg_indicator[r] × next_register[r][limb_idx])
+            let mut normalized_limb: AB::Expr = AB::Expr::ZERO;
+            for reg_idx in 0..16 {
+                let indicator_col = self.indices().norm_reg_indicator(reg_idx);
+                let indicator: AB::Expr = local[indicator_col].into();
+                let reg_col = self.col_register(reg_idx, limb_idx);
+                let reg_limb: AB::Expr = next[reg_col].into();
+                normalized_limb = normalized_limb + indicator * reg_limb;
+            }
+
+            // Decompose normalized limb into two 10-bit chunks
+            // Note: We don't have dedicated chunk columns, so we compute them implicitly
+            // chunk_0 = normalized_limb mod 2^10
+            // chunk_1 = normalized_limb / 2^10
+            //
+            // For LogUp, we just need the differences (challenge - chunk_i)
+            // We'll use the witness-provided chunks for now (TODO: compute from normalized_limb)
             let chunk_0: AB::Expr = local[self.col_range_chunk0(limb_idx)].into();
             let chunk_1: AB::Expr = local[self.col_range_chunk1(limb_idx)].into();
 
-            // Verify chunk decomposition for arithmetic operations
-            // The destination register limb should equal chunk_0 + chunk_1 * 2^chunk_bits
-            //
-            // Use register indicators to dynamically select rd's limb value.
-            // rd_value = Σ(rd_indicator[i] * register[i])
-            let mut rd_limb_value: AB::Expr = AB::Expr::ZERO;
-            for reg_idx in 0..16 {
-                let rd_indicator: AB::Expr = local[self.col_rd_indicator(reg_idx)].into();
-                let reg_limb: AB::Expr = local[self.col_register(reg_idx, limb_idx)].into();
-                rd_limb_value = rd_limb_value + rd_indicator * reg_limb;
-            }
-
-            // Chunk decomposition: rd_limb = chunk_0 + chunk_1 * 2^chunk_bits
+            // Verify chunk decomposition: normalized_limb = chunk_0 + chunk_1 * 2^chunk_bits
             let reconstructed = chunk_0.clone() + chunk_1.clone() * chunk_shift;
+            builder.when(sel_active.clone()).assert_eq(normalized_limb, reconstructed);
 
-            // Constraint: when active, chunks must correctly decompose rd limb
-            // sel_active * (rd_limb - reconstructed) = 0
-            builder.assert_zero(sel_active.clone() * (rd_limb_value - reconstructed));
+            // Get carry value
+            let carry_col = self.indices().norm_carry(limb_idx);
+            let carry: AB::Expr = local[carry_col].into();
 
-            // Compute diff_i = challenge - chunk_i
-            let diff_0 = challenge_expr.clone() - chunk_0;
-            let diff_1 = challenge_expr.clone() - chunk_1;
+            // Compute differences for LogUp
+            let diff_chunk_0 = challenge_expr.clone() - chunk_0;
+            let diff_chunk_1 = challenge_expr.clone() - chunk_1;
+            let diff_carry = challenge_expr.clone() - carry;
 
-            chunk_diffs.push(diff_0);
-            chunk_diffs.push(diff_1);
+            chunk_diffs.push(diff_chunk_0);
+            chunk_diffs.push(diff_chunk_1);
+            chunk_diffs.push(diff_carry);
         }
 
         // Compute product of all differences: Π(diff_i)
@@ -182,40 +182,24 @@ impl ZkIrAir {
         }
 
         // The constraint: delta * Π(diff_i) = Σ[Π(diff_j for j≠i)]
-        // Guarded by sel_arithmetic: when not arithmetic, delta should be 0
-        // and chunks are 0, so diff_i = challenge for all i
+        // Guarded by sel_active (norm_is_point): when not normalizing, delta should be 0
         //
-        // For arithmetic ops: delta * Π(diff) = Σ(products_excluding_each)
-        // For non-arithmetic: delta = 0 (accumulator unchanged)
+        // At normalization points: delta * Π(diff) = Σ(products_excluding_each)
+        // Between normalization points: delta = 0 (accumulator unchanged)
 
         let lhs = acc_delta.clone() * product_all.clone();
         let rhs = sum_excluding;
 
-        // Apply constraint on transition rows, guarded by sel_arithmetic
-        // When sel_arithmetic = 1: verify LogUp update
-        // When sel_arithmetic = 0: chunks are 0, so constraint is:
-        //   delta * challenge^4 = 4 * challenge^3
-        //   which only holds when delta = 4/challenge
-        //   But delta should be 0, so we need a different approach.
-
-        // Better approach: Use conditional constraint
-        // IF sel_arithmetic THEN (delta * Π(diff) = Σ(excluding))
+        // Conditional constraint:
+        // IF norm_is_point THEN (delta * Π(diff) = Σ(excluding))
         // ELSE delta = 0
         //
-        // Combine into: sel_arithmetic * (lhs - rhs) + (1 - sel_arithmetic) * delta = 0
-        // This simplifies to: sel_arithmetic * lhs - sel_arithmetic * rhs + delta - sel_arithmetic * delta = 0
-        // = delta + sel_arithmetic * (lhs - rhs - delta) = 0
+        // Constraint 1: When normalizing, verify LogUp update
+        builder.when_transition().when(sel_active.clone()).assert_eq(lhs, rhs);
 
-        // For simpler constraint, just apply both:
-        // 1. When active (arithmetic AND rd != R0): lhs = rhs (LogUp update)
-        // 2. When not active: delta = 0 (no update)
-
-        // Constraint 1: sel_active * (lhs - rhs) = 0
-        builder.when_transition().assert_zero(sel_active.clone() * (lhs - rhs));
-
-        // Constraint 2: (1 - sel_active) * delta = 0
-        // This ensures accumulator doesn't change for non-arithmetic operations or when rd=R0
-        builder.when_transition().assert_zero((AB::Expr::ONE - sel_active) * acc_delta);
+        // Constraint 2: When not normalizing, accumulator must not change
+        let not_normalizing = AB::Expr::ONE - sel_active;
+        builder.when_transition().assert_zero(not_normalizing * acc_delta);
     }
 
     /// Verify chunk decomposition
@@ -229,8 +213,8 @@ impl ZkIrAir {
         chunk_0: AB::Expr,
         chunk_1: AB::Expr,
     ) {
-        // chunk_bits = limb_bits / 2
-        let chunk_bits = self.config.limb_bits / 2;
+        // chunk_bits = normalized_bits / 2 (10-bit for 30+30 architecture)
+        let chunk_bits = self.config.normalized_bits / 2;
         let chunk_shift = 1u32 << chunk_bits;
 
         // Verify: limb = chunk_0 + chunk_1 * 2^chunk_bits

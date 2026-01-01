@@ -124,9 +124,10 @@ impl Plonky3Verifier {
             ProofError::VerificationFailed(format!("Failed to deserialize proof: {}", e))
         })?;
 
-        // Create program config from VK
+        // Create program config from VK (30+30 architecture)
         let program_config = ProgramConfig {
-            limb_bits: vk.program_params.limb_bits as u8,
+            limb_bits: 30, // 30-bit storage for deferred operations
+            normalized_bits: 20, // 20-bit normalized values
             data_limbs: vk.program_params.data_limbs as u8,
             addr_limbs: vk.program_params.data_limbs as u8, // Use same as data_limbs
         };

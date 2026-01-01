@@ -19,7 +19,7 @@ use crate::backend::r#trait::{ProofError, ProofResult};
 use crate::types::extract_stype_rs2;
 use crate::witness::{
     MainWitness, MainTraceRow, MainWitnessBuilder,
-    MemoryOp, ProgramConfig, RangeCheckWitness, ValueBound,
+    MemoryOp, NormalizationWitness, ProgramConfig, RangeCheckWitness, ValueBound,
 };
 use zkir_runtime::ExecutionResult as VMExecutionResult;
 use zkir_spec::{MemoryOp as VMMemoryOp, Program, Value};
@@ -68,6 +68,12 @@ impl<'a> VMWitnessConverter<'a> {
             for prover_rc in prover_rcs {
                 builder.add_range_check(prover_rc);
             }
+        }
+
+        // Add normalization witnesses (deferred carry model)
+        for vm_norm in &vm_result.normalization_witnesses {
+            let prover_norm = self.convert_normalization_witness(vm_norm);
+            builder.add_normalization(prover_norm);
         }
 
         // Convert execution trace from VM format to prover format
@@ -169,9 +175,11 @@ impl<'a> VMWitnessConverter<'a> {
     }
 
     /// Convert VM program config to prover config
+    /// Uses 30+30 architecture: limb_bits becomes storage capacity, normalized_bits = 20
     fn vm_config_to_prover_config(&self, vm_config: zkir_spec::Config) -> ProgramConfig {
         ProgramConfig {
-            limb_bits: vm_config.limb_bits,
+            limb_bits: 30, // 30-bit storage for deferred operations
+            normalized_bits: 20, // 20-bit normalized values
             data_limbs: vm_config.data_limbs,
             addr_limbs: vm_config.addr_limbs,
         }
@@ -194,6 +202,18 @@ impl<'a> VMWitnessConverter<'a> {
     }
 
     /// Convert a 64-bit value to limbs
+    ///
+    /// In the 30+30 architecture:
+    /// - The VM uses write_reg_from_accumulated() which packs values with limb_bits (30), NOT normalized_bits (20)
+    /// - This applies to ALL values written by deferred operations (ADDI, ADD, SUB, etc.)
+    /// - Line 188 of zkir-runtime/src/state.rs: `value = limbs[0] | (limbs[1] << limb_bits)`
+    ///
+    /// Example: ADDI R2, R2, -16 with R2=100 produces accumulated result [1048660, 1048575]
+    /// - VM packs as: 1048660 | (1048575 << 30) = 1125898834149460
+    /// - Converter MUST unpack with limb_bits=30 to get [1048660, 1048575]
+    /// - If we used normalized_bits=20, we'd get [663956, 24340] which is WRONG!
+    ///
+    /// CRITICAL: Must match VM's write_reg_from_accumulated() packing (uses limb_bits, not normalized_bits)
     fn value_to_limbs(&self, value: u64, config: ProgramConfig) -> Vec<u32> {
         let limb_mask = (1u64 << config.limb_bits) - 1;
         let mut limbs = Vec::new();
@@ -276,6 +296,23 @@ impl<'a> VMWitnessConverter<'a> {
         Ok(prover_checks)
     }
 
+    /// Convert VM normalization event to prover normalization witness
+    ///
+    /// Extracts the mathematical decomposition data from the VM's normalization event,
+    /// discarding metadata (pc, opcode, cause) that is only used for debugging in the runtime.
+    fn convert_normalization_witness(
+        &self,
+        vm_norm: &zkir_runtime::NormalizationEvent,
+    ) -> NormalizationWitness {
+        NormalizationWitness {
+            cycle: vm_norm.witness.cycle,
+            register: vm_norm.witness.register as u8,
+            accumulated: vm_norm.witness.accumulated_limbs,
+            normalized: vm_norm.witness.normalized_limbs,
+            carries: vm_norm.witness.carries,
+        }
+    }
+
     /// Compute program hash (simplified - just hash the code section)
     fn compute_program_hash(&self) -> [u8; 32] {
         use sha2::{Digest, Sha256};
@@ -321,7 +358,9 @@ mod tests {
         let vm_config = program.config();
         let prover_config = converter.vm_config_to_prover_config(vm_config);
 
-        assert_eq!(prover_config.limb_bits, 20);
+        // 30+30 architecture: always use 30-bit storage, 20-bit normalized
+        assert_eq!(prover_config.limb_bits, 30);
+        assert_eq!(prover_config.normalized_bits, 20);
         assert_eq!(prover_config.data_limbs, 2);
         assert_eq!(prover_config.addr_limbs, 2);
     }
@@ -384,6 +423,7 @@ mod tests {
                 max_bits: 32,
                 source: zkir_spec::BoundSource::ProgramWidth,
             }; 16],
+            register_states: [zkir_spec::RegisterState::Normalized; 16],
             memory_ops: vec![],
         };
 

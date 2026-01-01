@@ -24,6 +24,7 @@ fn run_program_and_get_witness(instructions: Vec<Instruction>) -> MainWitness {
 
     let mut vm_config = VMConfig::default();
     vm_config.enable_execution_trace = true;
+    vm_config.enable_deferred_model = true;  // Phase 7c: Enable 30+30 deferred carry model
 
     let vm = VM::new(program.clone(), vec![], vm_config);
     let result = vm.run().expect("VM execution failed");

@@ -99,6 +99,15 @@ impl MainColumns {
         // Register indicators (48: 16 rd + 16 rs1 + 16 rs2)
         cols += 48;
 
+        // Normalization witness columns (deferred carry model)
+        // - Carry values: data_limbs columns (e.g., 2 for default 2-limb config)
+        // - Normalization point flag: 1 column (is_normalization_point)
+        // - Register index: 1 column (which register was normalized, 0-15)
+        // - Normalization register indicators: 16 columns (one-hot encoding of register)
+        cols += config.data_limbs as usize; // Carry witnesses
+        cols += 2; // Normalization flag + register index
+        cols += 16; // Normalization register indicators
+
         cols
     }
 
@@ -1358,6 +1367,11 @@ impl ZkIrAir {
         self.eval_branch(builder, opcode, local, next);
         self.eval_jump(builder, opcode, local, next);
         self.eval_syscall(builder, opcode, local, next);
+
+        // Phase 7: Normalization constraint (deferred carry model)
+        // Verifies that: accumulated = normalized + carry × 2^20
+        // Uses norm_reg_indicator columns for register selection
+        self.eval_normalization(builder, local, next);
     }
 
     /// Evaluate memory consistency constraints
@@ -1501,7 +1515,9 @@ mod tests {
         let config = ProgramConfig::DEFAULT;
         let air = ZkIrAir::new(config);
 
-        assert_eq!(air.config.limb_bits, 20);
+        // 30+30 architecture: 30-bit storage, 20-bit normalized
+        assert_eq!(air.config.limb_bits, 30);
+        assert_eq!(air.config.normalized_bits, 20);
         assert_eq!(air.config.data_limbs, 2);
         assert!(air.num_columns > 0);
     }
@@ -1550,12 +1566,13 @@ mod tests {
         // Plus DIV/REM hierarchical columns: 4 diff chunks + 1 product carry = 5
         // Plus SHIFT hierarchical columns: 2 carry decomp = 2
         // Total additional: 49 + 5 + 2 = 56
-        assert_eq!(air.num_columns, 257); // 247 main (with Option A imm limbs) + 10 aux
+        // Plus normalization witness columns: 20 (2 carries + 1 flag + 1 register_idx + 16 indicators)
+        assert_eq!(air.num_columns, 277); // 267 main (with normalization + indicators) + 10 aux
     }
 
     #[test]
     fn test_different_config() {
-        let config = ProgramConfig::new(24, 3, 2).unwrap();
+        let config = ProgramConfig::new(24, 20, 3, 2).unwrap();
         let air = ZkIrAir::new(config);
 
         // Base columns (NOTE: addr_limbs = 2, data_limbs = 3):
@@ -1580,7 +1597,8 @@ mod tests {
         // Plus SHIFT hierarchical columns: 4 carry decomp = 4
         // Total additional: 99 + 7 + 4 = 110 (+ 1 extra for addr_limbs)
         // Note: addr_limbs = 2 here, so 1 fewer column than config with addr_limbs = 3
-        assert_eq!(air.num_columns, 344); // 334 main (with Option A: 2 imm_limb + 2 add_trunc_carry for 3-limb) + 10 aux
+        // Plus normalization witness columns: 21 (3 carries + 1 flag + 1 register_idx + 16 indicators)
+        assert_eq!(air.num_columns, 365); // 355 main (with normalization + indicators) + 10 aux
     }
 
     #[test]

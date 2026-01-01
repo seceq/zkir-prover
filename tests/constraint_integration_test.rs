@@ -19,8 +19,9 @@ fn test_constraints_are_integrated() {
     let air = ZkIrAir::new(config);
 
     // Verify AIR is properly constructed
-    // 257 columns = 247 main (with Option A imm limbs) + 10 auxiliary
-    assert_eq!(air.num_columns, 257);
+    // 261 columns = 251 main (with Option A imm limbs + normalization columns) + 10 auxiliary
+    // Phase 7 added 4 normalization columns: norm_carry[0], norm_carry[1], norm_is_point, norm_register_idx
+    assert_eq!(air.num_columns, 261);
 
     // Create a simple trace with 2 rows (local and next)
     let trace_width = air.num_columns;
@@ -207,19 +208,22 @@ fn test_constraint_methods_exist() {
 fn test_trace_width_with_different_configs() {
     // Test that trace width scales correctly with different configurations
 
-    // 2-limb config (default)
+    // 2-limb config (30+30 architecture)
     let config2 = ProgramConfig {
-        limb_bits: 20,
+        limb_bits: 30,
+        normalized_bits: 20,
         data_limbs: 2,
         addr_limbs: 2,
     };
     let air2 = ZkIrAir::new(config2);
-    // 257 columns = 247 main (with Option A imm limbs) + 10 auxiliary
-    assert_eq!(air2.num_columns, 257);
+    // 261 columns = 251 main (with Option A imm limbs + normalization columns) + 10 auxiliary
+    // Phase 7 added 4 normalization columns
+    assert_eq!(air2.num_columns, 261);
 
-    // 3-limb config
+    // 3-limb config (30+30 architecture)
     let config3 = ProgramConfig {
-        limb_bits: 20,
+        limb_bits: 30,
+        normalized_bits: 20,
         data_limbs: 3,
         addr_limbs: 3,
     };
@@ -228,12 +232,13 @@ fn test_trace_width_with_different_configs() {
     // - 16 more register columns (16 regs * 1 extra limb)
     // - 1 more mem addr limb
     // - 1 more mem value limb
+    // - 1 more normalization carry column (for 3rd limb)
     // - Plus additional hierarchical decomposition columns that scale with limbs
     // - MUL: +4 operand chunks, +40 partial products (6²-4²=20, ×2), +6 carries ((5-3)×3)
     // - DIV: +2 cmp diff chunks
     // - SHIFT: +2 carry decomp chunks
-    // New delta = 345 - 257 = 88
-    assert_eq!(air3.num_columns, 345);
+    // New delta = 350 - 261 = 89 (extra +1 due to normalization carry scaling)
+    assert_eq!(air3.num_columns, 350);
 
     // Calculate expected difference
     // Each additional limb adds:
@@ -242,9 +247,10 @@ fn test_trace_width_with_different_configs() {
     // - 4 division/comparison columns (quot, rem, lt, eq)
     // - 6 bitwise chunk columns
     // - 2 range check chunk columns
+    // - 1 normalization carry column
     // - Plus MUL hierarchical decomposition scaling (dominates due to n² products)
     let diff = air3.num_columns - air2.num_columns;
-    assert_eq!(diff, 88); // 345 - 257 = 88 (includes +1 add_trunc_carry for 3rd limb)
+    assert_eq!(diff, 89); // 350 - 261 = 89
 
     println!("Trace width scales correctly with limb count");
     println!("   2 limbs: {} columns", air2.num_columns);
@@ -315,13 +321,14 @@ fn test_air_width_calculation() {
     let air = ZkIrAir::new(config);
 
     // For 2-limb config with 16 registers:
-    // Current implementation: 257 columns (247 main + 10 auxiliary)
-    // Includes chunk-based MUL hierarchical decomposition columns and Option A imm limbs
+    // Current implementation: 261 columns (251 main + 10 auxiliary)
+    // Includes chunk-based MUL hierarchical decomposition columns, Option A imm limbs,
+    // and Phase 7 normalization columns (norm_carry[0..1], norm_is_point, norm_register_idx)
     assert!(air.num_columns >= 50, "AIR should have at least 50 columns");
-    assert!(air.num_columns <= 300, "AIR should not exceed 300 columns");
+    assert!(air.num_columns <= 350, "AIR should not exceed 350 columns");
 
-    // Verify it's exactly what we documented: 257 columns (includes Option A imm limbs)
-    assert_eq!(air.num_columns, 257, "Default config should have 257 columns");
+    // Verify it's exactly what we documented: 261 columns (includes Phase 7 normalization columns)
+    assert_eq!(air.num_columns, 261, "Default config should have 261 columns");
 
     println!("AIR width calculation verified:");
     println!("   Total columns: {}", air.num_columns);

@@ -130,6 +130,16 @@ pub struct ColumnIndices {
     /// Base index for rs2 indicator columns (16 columns)
     pub rs2_indicators_base: usize,
 
+    // ========== Normalization Witness Columns (Deferred Carry Model) ==========
+    /// Base index for normalization carry columns (data_limbs columns)
+    pub norm_carry_base: usize,
+    /// Normalization point flag column (1 = normalization occurred this cycle)
+    pub norm_is_point: usize,
+    /// Register index being normalized (0-15)
+    pub norm_register_idx: usize,
+    /// Base index for normalization register indicator columns (16 columns)
+    pub norm_reg_indicators_base: usize,
+
     // ========== Auxiliary Trace Columns ==========
     /// Start of auxiliary columns
     pub aux_start: usize,
@@ -301,6 +311,16 @@ impl ColumnIndices {
         let rs2_indicators_base = offset;
         offset += REGISTER_COUNT;
 
+        // Normalization witness columns (deferred carry model)
+        let norm_carry_base = offset;
+        offset += data_limbs; // Carry values (one per limb)
+        let norm_is_point = offset;
+        offset += 1; // Normalization point flag
+        let norm_register_idx = offset;
+        offset += 1; // Register index (0-15)
+        let norm_reg_indicators_base = offset;
+        offset += REGISTER_COUNT; // Indicator columns (one per register)
+
         // End of main columns
         let main_columns = offset;
         let aux_start = offset;
@@ -377,6 +397,10 @@ impl ColumnIndices {
             rd_indicators_base,
             rs1_indicators_base,
             rs2_indicators_base,
+            norm_carry_base,
+            norm_is_point,
+            norm_register_idx,
+            norm_reg_indicators_base,
             aux_start,
             mem_perm_exec,
             mem_perm_sorted,
@@ -646,6 +670,34 @@ impl ColumnIndices {
     pub fn rs2_indicator(&self, reg_idx: usize) -> usize {
         debug_assert!(reg_idx < REGISTER_COUNT);
         self.rs2_indicators_base + reg_idx
+    }
+
+    // ========== Normalization Witness Accessors ==========
+
+    /// Get normalization carry column index for a specific limb
+    #[inline]
+    pub fn norm_carry(&self, limb_idx: usize) -> usize {
+        debug_assert!(limb_idx < self.data_limbs);
+        self.norm_carry_base + limb_idx
+    }
+
+    /// Get normalization point flag column index
+    #[inline]
+    pub fn norm_is_point(&self) -> usize {
+        self.norm_is_point
+    }
+
+    /// Get normalization register index column
+    #[inline]
+    pub fn norm_register_idx(&self) -> usize {
+        self.norm_register_idx
+    }
+
+    /// Get normalization register indicator column for a specific register
+    #[inline]
+    pub fn norm_reg_indicator(&self, reg_idx: usize) -> usize {
+        debug_assert!(reg_idx < REGISTER_COUNT);
+        self.norm_reg_indicators_base + reg_idx
     }
 
     // ========== Individual Opcode Indicator Accessors ==========

@@ -378,12 +378,13 @@ mod stress_tests {
 mod config_tests {
     use super::*;
 
-    /// Test with default configuration
+    /// Test with default configuration (30+30 deferred carry model)
     #[test]
     fn test_default_config() {
-        // Verify default config values
+        // Verify default config values for 30+30 deferred carry model
         let config = ProgramConfig::DEFAULT;
-        assert_eq!(config.limb_bits, 20);
+        assert_eq!(config.limb_bits, 30);           // 30-bit storage for deferred operations
+        assert_eq!(config.normalized_bits, 20);     // 20-bit normalized values
         assert_eq!(config.data_limbs, 2);
 
         // Simple program should work with default config
@@ -399,14 +400,15 @@ mod config_tests {
         assert!(result.is_ok(), "Default config proof failed: {:?}", result.err());
     }
 
-    /// Test chunk bits calculation
+    /// Test chunk bits calculation (based on normalized_bits, not limb_bits)
     #[test]
     fn test_chunk_bits_calculation() {
         let config = ProgramConfig::DEFAULT;
         let chunk_bits = config.chunk_bits();
 
-        assert_eq!(chunk_bits, 10, "Chunk bits should be half of limb_bits");
-        assert_eq!(config.limb_bits / 2, chunk_bits as u8);
+        // In 30+30 model, chunks are half of normalized_bits (20/2 = 10)
+        assert_eq!(chunk_bits, 10, "Chunk bits should be half of normalized_bits");
+        assert_eq!(config.normalized_bits / 2, chunk_bits as u8);
     }
 }
 

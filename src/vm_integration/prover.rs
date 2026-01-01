@@ -135,6 +135,9 @@ impl VMProver {
         let mut config = VMConfig::default();
         config.enable_execution_trace = true;
         config.enable_range_checking = true;
+        // Phase 7c: Deferred model with accumulated trace values (not pre-normalized)
+        // Trace contains raw accumulated values (30-bit limbs), converter unpacks with limb_bits
+        config.enable_deferred_model = true;
 
         // Run VM
         let vm = VM::new(program.clone(), inputs.to_vec(), config);
@@ -389,6 +392,23 @@ mod tests {
         program.header.code_size = (program.code.len() * 4) as u32;
 
         let prover = VMProver::fast_test_config();
+
+        // Debug: check normalization events
+        let execution_result = prover.execute_with_witness(&program, &[]).unwrap();
+        eprintln!("=== STACK FRAME TEST DEBUG ===");
+        eprintln!("Execution trace rows: {}", execution_result.execution_trace.len());
+        for (i, row) in execution_result.execution_trace.iter().enumerate() {
+            eprintln!("Row {}: cycle={}, pc={:#x}, inst={:#x}", i, row.cycle, row.pc, row.instruction);
+        }
+        eprintln!("Normalization events: {}", execution_result.normalization_witnesses.len());
+        for (i, event) in execution_result.normalization_witnesses.iter().enumerate() {
+            eprintln!("Event {}: cycle={}, reg={:?}, opcode={:?}",
+                i, event.witness.cycle, event.witness.register, event.triggering_opcode);
+            eprintln!("  accumulated={:?}, normalized={:?}, carries={:?}",
+                event.witness.accumulated_limbs, event.witness.normalized_limbs, event.witness.carries);
+        }
+        eprintln!("=========================");
+
         let (proof, vk) = prover.prove_program(&program, &[]).unwrap();
         assert!(prover.verify(&proof, &vk).unwrap());
     }
@@ -433,6 +453,23 @@ mod tests {
         program.header.code_size = (program.code.len() * 4) as u32;
 
         let prover = VMProver::fast_test_config();
+
+        // Debug: check normalization events
+        let execution_result = prover.execute_with_witness(&program, &[]).unwrap();
+        eprintln!("=== BRANCH TEST DEBUG ===");
+        eprintln!("Execution trace rows: {}", execution_result.execution_trace.len());
+        for (i, row) in execution_result.execution_trace.iter().enumerate() {
+            eprintln!("Row {}: cycle={}, pc={:#x}", i, row.cycle, row.pc);
+        }
+        eprintln!("Normalization events: {}", execution_result.normalization_witnesses.len());
+        for (i, event) in execution_result.normalization_witnesses.iter().enumerate() {
+            eprintln!("Event {}: cycle={}, reg={:?}, opcode={:?}",
+                i, event.witness.cycle, event.witness.register, event.triggering_opcode);
+            eprintln!("  accumulated={:?}, normalized={:?}, carries={:?}",
+                event.witness.accumulated_limbs, event.witness.normalized_limbs, event.witness.carries);
+        }
+        eprintln!("=========================");
+
         let (proof, vk) = prover.prove_program(&program, &[]).unwrap();
         assert!(prover.verify(&proof, &vk).unwrap());
     }

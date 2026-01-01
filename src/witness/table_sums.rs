@@ -93,7 +93,7 @@ impl<F: Field> TableSums<F> {
         let xor_sum = compute_table_sum(&xor_entries, challenge);
 
         // Compute range check table sum
-        let range_entries = multiplicities.range_table.non_zero_entries();
+        let range_entries: Vec<(u32, u32)> = multiplicities.range_table.iter_non_zero().collect();
         let range_sum = compute_table_sum(&range_entries, challenge);
 
         Self {

@@ -127,6 +127,11 @@ impl<AB: AirBuilder> Air<AB> for ZkIrAirAdapter {
         // Range check constraints (LogUp accumulator updates for arithmetic operations)
         self.inner.eval_range_check_logup(builder, &local, &next);
 
+        // Normalization verification constraints (deferred carry model - Phase 7b)
+        // Verifies that normalization decomposition is correct at observation points
+        // Now enabled with norm_reg_indicator columns for register selection
+        self.inner.eval_normalization(builder, &local, &next);
+
         // Memory permutation final check (boundary constraint at last row)
         // Verifies that execution-order and sorted-order products are equal
         self.inner.eval_memory_permutation_final_check(builder, &local);
@@ -165,14 +170,14 @@ pub fn main_witness_to_trace<F: Field + FieldAlgebra + PrimeField64>(
 
     // Convert each main trace row (no auxiliary columns)
     for trace_row in &main.trace {
-        let row_values = main_trace_row_to_field_elements::<F>(trace_row, config);
+        let row_values = main_trace_row_to_field_elements::<F>(trace_row, config, main);
         values.extend(row_values);
     }
 
     // Pad remaining rows
     if actual_rows < num_rows {
         let last_row = if !main.trace.is_empty() {
-            main_trace_row_to_field_elements::<F>(&main.trace[actual_rows - 1], config)
+            main_trace_row_to_field_elements::<F>(&main.trace[actual_rows - 1], config, main)
         } else {
             vec![F::ZERO; num_cols]
         };
@@ -241,20 +246,25 @@ pub fn aux_witness_to_trace<F: Field + FieldAlgebra>(
 /// This generates all main trace columns for the RAP flow, matching the layout
 /// defined in MainColumns::calculate_count(). Column order must match exactly.
 ///
-/// Layout (for default 2-limb config = 171 main columns):
+/// Layout (for default 2-limb config = 251 main columns):
 /// 1. PC + Instruction (2)
 /// 2. Registers 16×2 + bounds 16 (48)
 /// 3. Memory addr 2 + value 2 + flags 2 (6)
-/// 4. Instruction decode: opcode + rd + rs1 + rs2 + imm + is_imm + sign_bit (7)
+/// 4. Instruction decode: opcode + rd + rs1 + rs2 + imm + is_imm + sign_bit + imm_limbs (9)
 /// 5. Selectors (10)
-/// 6. Opcode indicators: bitwise 7 + load 6 + store 4 + arith 6 (23)
-/// 7. Complex aux: div/rem 4 + lt 2 + eq 2 + branch 1 + carry 1 + zero 1 (11)
-/// 8. Bitwise chunks 6×2 (12)
-/// 9. Range check chunks 2×2 (4)
-/// 10. Register indicators 48 (48)
+/// 6. Opcode indicators: bitwise 7 + load 6 + store 4 + arith 8 + shift 6 + cmov 3 + compare 4 (38)
+/// 7. Complex aux: div/rem 4 + lt 2 + eq 2 + branch 1 + shift_carry 1 + zero 1 (11)
+/// 8. Multi-limb carries: add 1 + sub 1 + trunc 1 (3)
+/// 9. Bitwise chunks 6×2 + range chunks 2×2 (16)
+/// 10. MUL decomposition: operand chunks 8 + partial products 32 + carries 6 (46)
+/// 11. DIV/REM decomposition: cmp diff 4 + product carry 1 (5)
+/// 12. SHIFT decomposition: carry decomp 2 (2)
+/// 13. Register indicators 48 (48)
+/// 14. Normalization witness: carries 2 + flag 1 + register_idx 1 (4)
 fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
     trace_row: &crate::witness::MainTraceRow,
     config: &ProgramConfig,
+    main_witness: &MainWitness,
 ) -> Vec<F> {
     let mut values = Vec::new();
     let data_limbs = config.data_limbs as usize;
@@ -393,6 +403,13 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
     // IMPORTANT: Only arithmetic operations (ADDI) and comparisons (SLTI, SLTUI) use
     // sign-extended immediates. Logical operations (ANDI, ORI, XORI) and shifts (SLLI, etc.)
     // use zero-extended immediates (no sign extension needed).
+    //
+    // CRITICAL (30+30 deferred carry model): Immediates are sign-extended to normalized_bits (20),
+    // NOT limb_bits (30). This is because:
+    // 1. Immediates are always normalized (20-bit) values from the instruction encoding
+    // 2. Register limbs can contain accumulated values (up to 30-bit from deferred carries)
+    // 3. Adding normalized imm to accumulated rs1 produces a new accumulated value in rd
+    // 4. The VM writes accumulated results using write_reg_from_accumulated() which packs as 30-bit
     let (imm_limb_0, imm_limb_1) = if is_imm == 1 {
         // Check if this is an instruction that needs sign-extension
         // Sign-extension is only needed for ADDI (0x08) and comparison immediates (SLTI, SLTUI)
@@ -400,10 +417,11 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
 
         if needs_sign_extension {
             // Sign-extended immediate for ADDI
-            let limb_max = 1u32 << config.limb_bits;
+            // Use normalized_bits (20) for immediate values
+            let normalized_max = 1u32 << config.normalized_bits;
             // Sign extension: replicate bit 16 into bits 17-19 for 17-bit to 20-bit extension
             // Offset = bits 17-19 set = 2^17 + 2^18 + 2^19 = 2^20 - 2^17 = 917504
-            let sign_extend_offset = limb_max - (1u32 << 17);  // NOT (1 << IMM_SIGN_BIT)!
+            let sign_extend_offset = normalized_max - (1u32 << 17);
 
             // imm_limb_0 = imm_raw + sign_bit * sign_extend_offset
             let imm_limb_0 = if sign_bit == 1 {
@@ -412,9 +430,9 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
                 imm17
             };
 
-            // imm_limb_1 = sign_bit * (2^limb_bits - 1)
+            // imm_limb_1 = sign_bit * (2^normalized_bits - 1)
             let imm_limb_1 = if sign_bit == 1 {
-                limb_max - 1  // All 1s for negative (0xFFFFF for 20-bit)
+                normalized_max - 1  // All 1s for negative (0xFFFFF for 20-bit normalized)
             } else {
                 0
             };
@@ -671,16 +689,44 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
     values.push(F::ZERO);
 
     // === Section 7b: Multi-limb arithmetic carry/borrow columns ===
-    // ADD/ADDI carry columns (data_limbs - 1)
-    // For ADD: carry[i] = 1 if rs1[i] + rs2[i] + carry[i-1] >= 2^limb_bits
-    // For ADDI: carry[i] = 1 if rs1[i] + imm (limb i) + carry[i-1] >= 2^limb_bits
-    let is_add = op == Opcode::Add.to_u8() as u32;
-    let is_addi = op == Opcode::Addi.to_u8() as u32;
-    let is_sub = op == Opcode::Sub.to_u8() as u32;
-    let limb_max = 1u64 << config.limb_bits;
+    //
+    // NOTE: In the 30+30 deferred architecture, we do NOT extract carries
+    // immediately after ADD/SUB operations. Carries are only extracted at
+    // normalization points (observation points like branches, stores, etc.).
+    //
+    // These columns are kept for backward compatibility but set to ZERO
+    // since the deferred model constraints don't use them.
+    //
+    // TODO: Remove these columns entirely in a future cleanup pass.
 
     if data_limbs > 1 {
-        // Compute ADD/ADDI carries
+        // ADD/ADDI carry columns (data_limbs - 1) - UNUSED in deferred model
+        for carry_idx in 0..(data_limbs - 1) {
+            values.push(F::ZERO); // Deferred model: no immediate carry
+        }
+
+        // SUB borrow columns (data_limbs - 1) - UNUSED in deferred model
+        for _borrow_idx in 0..(data_limbs - 1) {
+            values.push(F::ZERO); // Deferred model: no immediate borrow
+        }
+
+        // ADD/ADDI truncation carry columns (data_limbs - 1) - UNUSED in deferred model
+        for _trunc_idx in 0..(data_limbs - 1) {
+            values.push(F::ZERO); // Deferred model: no truncation carries
+        }
+    }
+
+    /* OLD CARRY/BORROW COMPUTATION (kept for reference - UNUSED in deferred model)
+
+    This code computed immediate carries and borrows for the old 20+20 design.
+    In the 30+30 deferred architecture, we don't extract carries immediately.
+
+    if data_limbs > 1 {
+        let is_add = op == Opcode::Add.to_u8() as u32;
+        let is_addi = op == Opcode::Addi.to_u8() as u32;
+        let is_sub = op == Opcode::Sub.to_u8() as u32;
+        let limb_max = 1u64 << config.limb_bits;
+
         for carry_idx in 0..(data_limbs - 1) {
             if is_add || is_addi {
                 let rs1_idx = rs1 as usize;
@@ -885,12 +931,21 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
             }
         }
     }
+    END OF OLD CARRY/BORROW COMPUTATION */
+
+    // === Lookup normalization event for this cycle (used in Sections 9 and 11) ===
+    let current_cycle = trace_row.cycle;
+    let norm_event = main_witness.normalization_events.iter()
+        .find(|event| event.cycle == current_cycle);
 
     // === Section 8: Bitwise chunks (6 * data_limbs = 12 columns) ===
     // For bitwise operations (AND, OR, XOR), split register limbs into 10-bit chunks
     // Layout per limb: rs1_chunk0, rs1_chunk1, rs2_chunk0, rs2_chunk1, rd_chunk0, rd_chunk1
+    //
+    // NOTE: In the 30+30 architecture, chunks are based on normalized_bits (20), not limb_bits (30)
+    // This ensures uniform 10-bit chunk decomposition for range checks.
     let is_bitwise = Opcode::is_logical_raw(opcode);
-    let chunk_bits = config.limb_bits / 2; // 10 bits for 20-bit limbs
+    let chunk_bits = config.normalized_bits / 2; // 10 bits for 20-bit normalized values
     let chunk_mask = (1u32 << chunk_bits) - 1;
 
     for limb_idx in 0..data_limbs {
@@ -935,28 +990,36 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
     }
 
     // === Section 9: Range check chunks (2 * data_limbs = 4 columns) ===
-    // Range checks verify destination register limbs are within [0, 2^limb_bits)
-    // by decomposing each limb into two chunks of chunk_bits each.
-    // We range check for arithmetic operations that produce new values in rd.
-    // ZKIR v3.4: 0x00..=0x08 = ADD, SUB, MUL, MULH, DIVU, REMU, DIV, REM, ADDI
-    let is_arithmetic = Opcode::is_arithmetic_raw(opcode);
+    // In the deferred carry model (Phase 7b), range checks verify normalized values
+    // at normalization points (observation points like branches, stores, etc.)
+    //
+    // At normalization points:
+    // - These chunks decompose the normalized limb value into two 10-bit chunks
+    // - Used by the LogUp range check constraint to verify normalized values and carries
+    //
+    // At non-normalization points: set to zero (no range check)
 
-    for limb_idx in 0..data_limbs {
-        if is_arithmetic {
-            let rd_idx = rd as usize;
-            let rd_limb = trace_row.registers.get(rd_idx)
-                .and_then(|r| r.get(limb_idx))
-                .copied()
-                .unwrap_or(0);
+    // Check if this is a normalization point (reuse norm_event from Section 11)
+    if let Some(event) = norm_event {
+        // For each limb of the normalized value
+        for limb_idx in 0..data_limbs {
+            // Get the normalized limb value (20-bit for 30+30 architecture)
+            let norm_limb = if limb_idx < event.normalized.len() {
+                event.normalized[limb_idx]
+            } else {
+                0u32
+            };
 
-            // Split into low and high chunks for range checking
-            let chunk_0 = rd_limb & chunk_mask;
-            let chunk_1 = rd_limb >> chunk_bits;
+            // Split into low and high chunks (10-bit each for 20-bit normalized values)
+            let chunk_0 = norm_limb & chunk_mask;
+            let chunk_1 = norm_limb >> chunk_bits;
 
             values.push(F::from_canonical_u32(chunk_0));
             values.push(F::from_canonical_u32(chunk_1));
-        } else {
-            // Non-arithmetic: no range check needed, set to zero
+        }
+    } else {
+        // Not a normalization point: no range check needed
+        for _ in 0..data_limbs {
             values.push(F::ZERO);
             values.push(F::ZERO);
         }
@@ -1318,6 +1381,48 @@ fn main_trace_row_to_field_elements<F: Field + FieldAlgebra>(
         values.push(F::from_canonical_u32(indicator));
     }
 
+    // === Section 11: Normalization witness columns (deferred carry model) ===
+    // Use norm_event looked up earlier (before Section 8)
+    if let Some(event) = norm_event {
+        // Carry values (data_limbs columns)
+        for limb_idx in 0..data_limbs {
+            if limb_idx < event.carries.len() {
+                values.push(F::from_canonical_u32(event.carries[limb_idx]));
+            } else {
+                values.push(F::ZERO);
+            }
+        }
+        // Normalization point flag (1 = normalization occurred)
+        values.push(F::ONE);
+        // Register index being normalized (0-15)
+        values.push(F::from_canonical_u32(event.register as u32));
+    } else {
+        // No normalization this cycle: all zeros
+        for _ in 0..data_limbs {
+            values.push(F::ZERO);
+        }
+        values.push(F::ZERO); // No normalization
+        values.push(F::ZERO); // Register index 0 (unused)
+    }
+
+    // === Section 12: Normalization register indicators (16 columns) ===
+    // One-hot encoding of which register was normalized
+    // norm_reg_indicators[i] = 1 if register i was normalized this cycle, 0 otherwise
+    if let Some(event) = norm_event {
+        for reg_idx in 0..16 {
+            if reg_idx == event.register as usize {
+                values.push(F::ONE);
+            } else {
+                values.push(F::ZERO);
+            }
+        }
+    } else {
+        // No normalization: all zeros
+        for _ in 0..16 {
+            values.push(F::ZERO);
+        }
+    }
+
     // Verify column count
     let air = ZkIrAir::new(config.clone());
     let expected = air.main_trace_width();
@@ -1378,7 +1483,13 @@ mod tests {
             vec![ValueBound::zero(); 16],
         );
 
-        let elements = main_trace_row_to_field_elements::<F>(&row, &config);
+        // Create a minimal MainWitness for normalization witness lookup
+        use crate::witness::MainWitnessBuilder;
+        let mut builder = MainWitnessBuilder::new(config.clone(), [0u8; 32]);
+        builder.add_trace_row(row.clone());
+        let main_witness = builder.build();
+
+        let elements = main_trace_row_to_field_elements::<F>(&row, &config, &main_witness);
 
         // Should produce correct number of main trace columns
         let expected = ZkIrAir::new(config.clone()).main_trace_width();
@@ -1391,9 +1502,10 @@ mod tests {
 
     #[test]
     fn test_multi_limb_config() {
-        // Test with 3-limb configuration
+        // Test with 3-limb configuration (30+30 architecture)
         let config_3limb = ProgramConfig {
-            limb_bits: 20,
+            limb_bits: 30,
+            normalized_bits: 20,
             data_limbs: 3,
             addr_limbs: 3,
         };

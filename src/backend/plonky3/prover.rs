@@ -503,6 +503,7 @@ mod tests {
             memory_ops: Vec::new(),
             range_checks: Vec::new(),
             crypto_ops: Vec::new(),
+            normalization_events: Vec::new(),
             public_io: PublicIO {
                 program_hash: [0u8; 32],
                 inputs: vec![vec![42, 0]],
@@ -535,7 +536,7 @@ mod tests {
 
         let proof = result.unwrap();
         assert_eq!(proof.metadata.num_cycles, 10);
-        assert_eq!(proof.metadata.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
+        assert_eq!(proof.metadata.trace_width, 277); // 267 main (with normalization + indicators) + 10 aux
         assert_eq!(proof.metadata.trace_height, 16);
         assert!(!proof.proof_bytes.is_empty());
     }
@@ -577,7 +578,7 @@ mod tests {
 
         let proof = result.unwrap();
         assert_eq!(proof.metadata.num_cycles, 10);
-        assert_eq!(proof.metadata.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
+        assert_eq!(proof.metadata.trace_width, 277); // 267 main (with normalization + indicators) + 10 aux
         assert!(!proof.proof_bytes.is_empty());
         assert!(proof.metadata.rap_challenge.is_some());
     }
@@ -592,7 +593,7 @@ mod tests {
 
         let proof = result.unwrap();
         assert_eq!(proof.metadata.num_cycles, 10);
-        assert_eq!(proof.metadata.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
+        assert_eq!(proof.metadata.trace_width, 277); // 267 main (with normalization + indicators) + 10 aux
         assert!(!proof.proof_bytes.is_empty());
         assert!(proof.metadata.rap_challenge.is_some());
     }

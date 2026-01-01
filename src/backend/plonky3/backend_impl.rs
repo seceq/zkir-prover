@@ -105,6 +105,7 @@ mod tests {
             memory_ops: Vec::new(),
             range_checks: Vec::new(),
             crypto_ops: Vec::new(),
+            normalization_events: Vec::new(),
             public_io: PublicIO {
                 program_hash: [0u8; 32],
                 inputs: vec![vec![42, 0]],
@@ -153,7 +154,7 @@ mod tests {
 
         // Check VK has correct metadata
         assert_eq!(proof.verifying_key.metadata.backend_name, "Plonky3");
-        assert_eq!(proof.verifying_key.program_params.trace_width, 257); // 247 main (with Option A imm limbs) + 10 aux
+        assert_eq!(proof.verifying_key.program_params.trace_width, 277); // 267 main (with normalization + indicators) + 10 aux
         assert_eq!(proof.verifying_key.stark_config.field_prime, crate::types::MERSENNE31_PRIME as u64);
     }
 

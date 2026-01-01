@@ -151,32 +151,34 @@ mod tests {
         assert_eq!(config.log_blowup, 1); // 2x blowup
         assert_eq!(config.blowup_factor(), 2);
         assert!(config.num_queries >= 50);
-        assert_eq!(config.trace_width(), 257); // 247 main (with Option A imm limbs) + 10 aux
+        assert_eq!(config.trace_width(), 277); // 267 main (with normalization + indicators) + 10 aux
     }
 
     #[test]
     fn test_trace_width_scaling() {
-        // 2-limb config
+        // 2-limb config (30+30 architecture)
         let config2 = StarkConfiguration::new(
             ProgramConfig {
-                limb_bits: 20,
+                limb_bits: 30,
+                normalized_bits: 20,
                 data_limbs: 2,
                 addr_limbs: 2,
             },
             100,
         );
-        assert_eq!(config2.trace_width(), 257); // 247 main (with Option A imm limbs) + 10 aux
+        assert_eq!(config2.trace_width(), 277); // 267 main (with normalization + indicators) + 10 aux
 
-        // 3-limb config
+        // 3-limb config (30+30 architecture)
         let config3 = StarkConfiguration::new(
             ProgramConfig {
-                limb_bits: 20,
+                limb_bits: 30,
+                normalized_bits: 20,
                 data_limbs: 3,
                 addr_limbs: 3,
             },
             100,
         );
-        assert_eq!(config3.trace_width(), 345); // 335 main (with Option A: 2 imm_limb + 2 add_trunc_carry for 3-limb) + 10 aux
+        assert_eq!(config3.trace_width(), 366); // 340 main (with normalization: 3 carries + flag + reg_idx) + 10 aux
     }
 
     #[test]
@@ -215,7 +217,7 @@ mod tests {
         assert!(summary.contains("Mersenne 31"));
         assert!(summary.contains("100 bits"));
         assert!(summary.contains("Poseidon2"));
-        assert!(summary.contains("257 columns")); // 247 main (with Option A imm limbs) + 10 aux
+        assert!(summary.contains("277 columns")); // 251 main (with normalization) + 10 aux
     }
 
     #[test]

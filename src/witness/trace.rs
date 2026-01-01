@@ -190,6 +190,29 @@ impl RangeCheckWitness {
     }
 }
 
+/// Normalization witness for deferred carry model
+///
+/// Records normalization events where accumulated values are converted
+/// to normalized form by extracting carries.
+///
+/// Verification constraint:
+/// ```text
+/// accumulated[i] = normalized[i] + carry[i] * 2^normalized_bits
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NormalizationWitness {
+    /// Cycle where normalization occurred
+    pub cycle: u64,
+    /// Register that was normalized (0-15)
+    pub register: u8,
+    /// Accumulated limbs before normalization [limb0, limb1]
+    pub accumulated: [u64; 2],
+    /// Normalized limbs after normalization [limb0, limb1]
+    pub normalized: [u32; 2],
+    /// Carries extracted [carry0, carry1]
+    pub carries: [u32; 2],
+}
+
 /// Cryptographic syscall witness
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CryptoWitness {
@@ -286,6 +309,8 @@ pub struct MainWitness {
     pub range_checks: Vec<RangeCheckWitness>,
     /// Cryptographic syscall witnesses
     pub crypto_ops: Vec<CryptoWitness>,
+    /// Normalization events for deferred carry model
+    pub normalization_events: Vec<NormalizationWitness>,
     /// Public inputs and outputs
     pub public_io: PublicIO,
     /// Program configuration
@@ -304,10 +329,18 @@ impl MainWitness {
 
 
 /// ZKIR v3.4 program configuration
+///
+/// Uses the 30+30 limb architecture for efficient deferred range checks:
+/// - Each limb can STORE up to 30 bits (for accumulation during deferred ops)
+/// - Normalized values are 20 bits per limb (canonical form)
+/// - 10-bit structural headroom allows 1024 deferred ADD/SUB without tracking
+/// - Uniform 10-bit chunk decomposition for all range checks
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProgramConfig {
-    /// Limb size in bits (16-30, must be even)
+    /// Limb storage capacity in bits (30 for 30+30 architecture)
     pub limb_bits: u8,
+    /// Normalized value bits per limb (20 for 30+30 architecture)
+    pub normalized_bits: u8,
     /// Number of limbs for data values (1-4)
     pub data_limbs: u8,
     /// Number of limbs for addresses (1-2)
@@ -315,17 +348,24 @@ pub struct ProgramConfig {
 }
 
 impl ProgramConfig {
-    /// Default configuration (20-bit limbs, 40-bit data/addresses)
+    /// Default configuration: 30+30 architecture (30-bit storage, 20-bit normalized)
+    ///
+    /// This enables:
+    /// - 1024 deferred ADD/SUB operations without tracking
+    /// - Uniform 10-bit lookup tables for all range checks
+    /// - 33% fewer constraints per ADD vs immediate-carry design
     pub const DEFAULT: Self = Self {
-        limb_bits: 20,
+        limb_bits: 30,
+        normalized_bits: 20,
         data_limbs: 2,
         addr_limbs: 2,
     };
 
-    /// Create a new configuration
-    pub fn new(limb_bits: u8, data_limbs: u8, addr_limbs: u8) -> Result<Self, ConfigError> {
+    /// Create a new configuration with custom parameters
+    pub fn new(limb_bits: u8, normalized_bits: u8, data_limbs: u8, addr_limbs: u8) -> Result<Self, ConfigError> {
         let config = Self {
             limb_bits,
+            normalized_bits,
             data_limbs,
             addr_limbs,
         };
@@ -333,49 +373,69 @@ impl ProgramConfig {
         Ok(config)
     }
 
-    /// Total data bits
+    /// Create a 30+30 configuration (recommended default)
+    pub fn new_30_30() -> Self {
+        Self::DEFAULT
+    }
+
+    /// Total data bits (using normalized value size)
     pub fn data_bits(&self) -> u32 {
-        self.limb_bits as u32 * self.data_limbs as u32
+        self.normalized_bits as u32 * self.data_limbs as u32
     }
 
-    /// Total address bits
+    /// Total address bits (using normalized value size)
     pub fn addr_bits(&self) -> u32 {
-        self.limb_bits as u32 * self.addr_limbs as u32
+        self.normalized_bits as u32 * self.addr_limbs as u32
     }
 
-    /// Chunk size (limb_bits / 2)
+    /// Chunk size for range checks (normalized_bits / 2)
+    /// Always 10 bits for 30+30 architecture (uniform lookup tables)
     pub fn chunk_bits(&self) -> u32 {
-        self.limb_bits as u32 / 2
+        self.normalized_bits as u32 / 2
     }
 
-    /// Headroom bits for i32 operations
-    pub fn headroom_bits(&self) -> u32 {
-        self.data_bits().saturating_sub(32)
+    /// Structural headroom bits per limb (limb_bits - normalized_bits)
+    /// For 30+30: 30 - 20 = 10 bits of headroom
+    pub fn structural_headroom(&self) -> u32 {
+        (self.limb_bits - self.normalized_bits) as u32
     }
 
-    /// Maximum deferred additions before range check needed
-    pub fn max_deferred_adds(&self) -> u32 {
-        1u32 << self.headroom_bits()
+    /// Maximum deferred ADD/SUB operations without normalization
+    /// For 30+30: 2^10 = 1024 operations
+    pub fn max_deferred_ops(&self) -> u32 {
+        1u32 << self.structural_headroom()
     }
 
-    /// Maximum deferred multiplications
-    pub fn max_deferred_muls(&self) -> u32 {
-        let headroom = self.headroom_bits();
-        if headroom > 1 {
-            (headroom - 1) / 2
-        } else {
-            0
-        }
+    /// Maximum limb value during accumulation (2^limb_bits - 1)
+    pub fn limb_max(&self) -> u32 {
+        (1u32 << self.limb_bits) - 1
+    }
+
+    /// Maximum normalized value per limb (2^normalized_bits - 1)
+    pub fn normalized_max(&self) -> u32 {
+        (1u32 << self.normalized_bits) - 1
     }
 
     /// Validate configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Limb bits must be even and in range
+        // Limb storage must be in range
         if self.limb_bits < 16 || self.limb_bits > 30 {
             return Err(ConfigError::InvalidLimbBits(self.limb_bits));
         }
-        if self.limb_bits % 2 != 0 {
-            return Err(ConfigError::OddLimbBits(self.limb_bits));
+
+        // Normalized bits must be even (for symmetric chunk decomposition)
+        if self.normalized_bits % 2 != 0 {
+            return Err(ConfigError::OddLimbBits(self.normalized_bits));
+        }
+
+        // Normalized bits must be <= limb_bits (can't store more than capacity)
+        if self.normalized_bits > self.limb_bits {
+            return Err(ConfigError::InvalidLimbBits(self.normalized_bits));
+        }
+
+        // Normalized bits must be >= 16 for reasonable value range
+        if self.normalized_bits < 16 {
+            return Err(ConfigError::InvalidLimbBits(self.normalized_bits));
         }
 
         // Data limbs: 1-4
@@ -423,6 +483,7 @@ pub struct MainWitnessBuilder {
     memory_ops: Vec<MemoryOp>,
     range_checks: Vec<RangeCheckWitness>,
     crypto_ops: Vec<CryptoWitness>,
+    normalization_events: Vec<NormalizationWitness>,
     inputs: Vec<Vec<u32>>,
     outputs: Vec<Vec<u32>>,
     multiplicities: LogUpMultiplicities,
@@ -439,6 +500,7 @@ impl MainWitnessBuilder {
             memory_ops: Vec::new(),
             range_checks: Vec::new(),
             crypto_ops: Vec::new(),
+            normalization_events: Vec::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
             multiplicities: LogUpMultiplicities::new(),
@@ -464,6 +526,11 @@ impl MainWitnessBuilder {
     /// Add a crypto operation
     pub fn add_crypto_op(&mut self, op: CryptoWitness) {
         self.crypto_ops.push(op);
+    }
+
+    /// Add a normalization event
+    pub fn add_normalization(&mut self, event: NormalizationWitness) {
+        self.normalization_events.push(event);
     }
 
     /// Set public inputs
@@ -497,6 +564,7 @@ impl MainWitnessBuilder {
             memory_ops: self.memory_ops,
             range_checks: self.range_checks,
             crypto_ops: self.crypto_ops,
+            normalization_events: self.normalization_events,
             public_io: PublicIO {
                 program_hash: self.program_hash,
                 inputs: self.inputs,
@@ -515,34 +583,42 @@ mod tests {
 
     #[test]
     fn test_program_config_default() {
+        // 30+30 architecture: 30-bit storage, 20-bit normalized
         let config = ProgramConfig::DEFAULT;
-        assert_eq!(config.limb_bits, 20);
+        assert_eq!(config.limb_bits, 30);
+        assert_eq!(config.normalized_bits, 20);
         assert_eq!(config.data_limbs, 2);
         assert_eq!(config.addr_limbs, 2);
-        assert_eq!(config.data_bits(), 40);
-        assert_eq!(config.addr_bits(), 40);
-        assert_eq!(config.chunk_bits(), 10);
-        assert_eq!(config.headroom_bits(), 8);
-        assert_eq!(config.max_deferred_adds(), 256);
+        assert_eq!(config.data_bits(), 40);  // 20 * 2 = 40 bits of value
+        assert_eq!(config.addr_bits(), 40);  // 20 * 2 = 40 bits of address
+        assert_eq!(config.chunk_bits(), 10); // 20 / 2 = 10-bit chunks
+        assert_eq!(config.structural_headroom(), 10); // 30 - 20 = 10 bits
+        assert_eq!(config.max_deferred_ops(), 1024);  // 2^10 = 1024 ops
     }
 
     #[test]
     fn test_program_config_validation() {
-        // Valid configs
-        assert!(ProgramConfig::new(20, 2, 2).is_ok());
-        assert!(ProgramConfig::new(16, 1, 1).is_ok());
-        assert!(ProgramConfig::new(30, 4, 2).is_ok());
+        // Valid configs: new(limb_bits, normalized_bits, data_limbs, addr_limbs)
+        assert!(ProgramConfig::new(30, 20, 2, 2).is_ok()); // 30+30 default
+        assert!(ProgramConfig::new(20, 20, 2, 2).is_ok()); // legacy 20+20
+        assert!(ProgramConfig::new(24, 20, 2, 2).is_ok()); // custom headroom
+        assert!(ProgramConfig::new(30, 20, 4, 2).is_ok()); // more data limbs
 
-        // Invalid limb bits
-        assert!(ProgramConfig::new(14, 2, 2).is_err());
-        assert!(ProgramConfig::new(32, 2, 2).is_err());
-        assert!(ProgramConfig::new(19, 2, 2).is_err()); // odd
+        // Invalid limb_bits (must be 16-30)
+        assert!(ProgramConfig::new(14, 14, 2, 2).is_err());
+        assert!(ProgramConfig::new(32, 20, 2, 2).is_err());
+
+        // Invalid normalized_bits (must be even)
+        assert!(ProgramConfig::new(30, 19, 2, 2).is_err()); // odd
+
+        // Invalid: normalized > limb (can't store more than capacity)
+        assert!(ProgramConfig::new(20, 24, 2, 2).is_err());
 
         // Invalid data/addr limbs
-        assert!(ProgramConfig::new(20, 0, 2).is_err());
-        assert!(ProgramConfig::new(20, 5, 2).is_err());
-        assert!(ProgramConfig::new(20, 2, 0).is_err());
-        assert!(ProgramConfig::new(20, 2, 3).is_err());
+        assert!(ProgramConfig::new(30, 20, 0, 2).is_err());
+        assert!(ProgramConfig::new(30, 20, 5, 2).is_err());
+        assert!(ProgramConfig::new(30, 20, 2, 0).is_err());
+        assert!(ProgramConfig::new(30, 20, 2, 3).is_err());
     }
 
     #[test]
